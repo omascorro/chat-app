@@ -1,11 +1,13 @@
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import Constants from 'expo-constants';
+import * as ImagePicker from 'expo-image-picker';
 import * as Notifications from 'expo-notifications';
 import * as SecureStore from 'expo-secure-store';
 import { StatusBar } from 'expo-status-bar';
 import { useEffect, useMemo, useRef, useState } from 'react';
 import {
   FlatList,
+  Image,
   KeyboardAvoidingView,
   Platform,
   StyleSheet,
@@ -71,7 +73,7 @@ function formatTime(ts: number) {
 }
 
 type OnlineUser = { username: string; publicKey: string; online: boolean };
-type Message = { id: string; text: string; sentByMe: boolean; timestamp: number };
+type Message = { id: string; text: string; kind: 'text' | 'image'; sentByMe: boolean; timestamp: number };
 type RatchetState = { sendChain: Uint8Array; recvChain: Uint8Array };
 
 function concatBytes(...arrays: Uint8Array[]): Uint8Array {
@@ -137,9 +139,20 @@ export default function ChatScreen() {
   const usernameRef = useRef('');
   const shouldReconnect = useRef(true);
   const hasLoadedHistory = useRef(false);
+  const flatListRef = useRef<FlatList>(null);
 
   useEffect(() => { onlineUsersRef.current = onlineUsers; }, [onlineUsers]);
   useEffect(() => { usernameRef.current = username; }, [username]);
+
+  useEffect(() => {
+    if (!selectedUser) return;
+    const msgs = conversations[selectedUser.username] || [];
+    if (msgs.length === 0) return;
+    const timer = setTimeout(() => {
+      flatListRef.current?.scrollToEnd({ animated: true });
+    }, 50);
+    return () => clearTimeout(timer);
+  }, [selectedUser, conversations]);
 
   useEffect(() => {
     if (!authenticated || username === '') return;
@@ -244,8 +257,21 @@ export default function ChatScreen() {
       if (!decrypted) return;
       state.recvChain = deriveKey(state.recvChain, 'NEXT');
 
-      const text = util.encodeUTF8(decrypted);
-      const newMsg: Message = { id: Date.now().toString() + Math.random(), text, sentByMe: false, timestamp: Date.now() };
+      const payloadStr = util.encodeUTF8(decrypted);
+      let parsed: { kind: 'text' | 'image'; content: string };
+      try {
+        parsed = JSON.parse(payloadStr);
+      } catch (e) {
+        parsed = { kind: 'text', content: payloadStr };
+      }
+
+      const newMsg: Message = {
+        id: Date.now().toString() + Math.random(),
+        text: parsed.content,
+        kind: parsed.kind || 'text',
+        sentByMe: false,
+        timestamp: Date.now(),
+      };
       setConversations((prev) => ({ ...prev, [sender]: [...(prev[sender] || []), newMsg] }));
     }
   };
@@ -340,17 +366,26 @@ export default function ChatScreen() {
   };
 
   const sendMessage = () => {
-    if (inputText.trim() === '' || !selectedUser) return;
+    console.log('🟡 sendMessage llamado, texto:', inputText);
+    if (inputText.trim() === '' || !selectedUser) {
+      console.log('🔴 Cancelado: texto vacío o sin usuario seleccionado');
+      return;
+    }
     const state = ratchets.current[selectedUser.username];
-    if (!state) return;
+    if (!state) {
+      console.log('🔴 Cancelado: no hay estado de ratchet para', selectedUser.username);
+      return;
+    }
     if (!ws.current || ws.current.readyState !== WebSocket.OPEN) {
       console.log('⚠️ No se pudo enviar: sin conexión en este momento');
       return;
     }
+    console.log('🟢 Enviando mensaje...');
 
+    const payload = JSON.stringify({ kind: 'text', content: inputText });
     const messageKey = deriveKey(state.sendChain, 'MSG');
     const nonce = nacl.randomBytes(24);
-    const ciphertext = nacl.secretbox(util.decodeUTF8(inputText), nonce, messageKey);
+    const ciphertext = nacl.secretbox(util.decodeUTF8(payload), nonce, messageKey);
     state.sendChain = deriveKey(state.sendChain, 'NEXT');
 
     ws.current.send(JSON.stringify({
@@ -360,9 +395,50 @@ export default function ChatScreen() {
       nonce: util.encodeBase64(nonce),
     }));
 
-    const newMsg: Message = { id: Date.now().toString(), text: inputText, sentByMe: true, timestamp: Date.now() };
+    const newMsg: Message = { id: Date.now().toString(), text: inputText, kind: 'text', sentByMe: true, timestamp: Date.now() };
     setConversations((prev) => ({ ...prev, [selectedUser.username]: [...(prev[selectedUser.username] || []), newMsg] }));
     setInputText('');
+  };
+
+  const sendImage = async () => {
+    if (!selectedUser) return;
+    const state = ratchets.current[selectedUser.username];
+    if (!state) return;
+
+    const permission = await ImagePicker.requestMediaLibraryPermissionsAsync();
+    if (!permission.granted) {
+      console.log('Permiso de galería no concedido');
+      return;
+    }
+
+    const result = await ImagePicker.launchImageLibraryAsync({
+      mediaTypes: ImagePicker.MediaTypeOptions.Images,
+      quality: 0.4,
+      base64: true,
+    });
+
+    if (result.canceled || !result.assets || !result.assets[0].base64) return;
+    if (!ws.current || ws.current.readyState !== WebSocket.OPEN) {
+      console.log('⚠️ No se pudo enviar: sin conexión en este momento');
+      return;
+    }
+
+    const base64Image = result.assets[0].base64;
+    const payload = JSON.stringify({ kind: 'image', content: base64Image });
+    const messageKey = deriveKey(state.sendChain, 'MSG');
+    const nonce = nacl.randomBytes(24);
+    const ciphertext = nacl.secretbox(util.decodeUTF8(payload), nonce, messageKey);
+    state.sendChain = deriveKey(state.sendChain, 'NEXT');
+
+    ws.current.send(JSON.stringify({
+      type: 'direct-message',
+      to: selectedUser.username,
+      ciphertext: util.encodeBase64(ciphertext),
+      nonce: util.encodeBase64(nonce),
+    }));
+
+    const newMsg: Message = { id: Date.now().toString(), text: base64Image, kind: 'image', sentByMe: true, timestamp: Date.now() };
+    setConversations((prev) => ({ ...prev, [selectedUser.username]: [...(prev[selectedUser.username] || []), newMsg] }));
   };
 
   if (!authenticated) {
@@ -481,7 +557,7 @@ export default function ChatScreen() {
     <>
       <StatusBar style={isDark ? 'light' : 'dark'} />
       <SafeAreaView style={styles.container} edges={['top', 'bottom']}>
-        <KeyboardAvoidingView style={{ flex: 1 }} behavior={Platform.OS === 'ios' ? 'padding' : undefined} keyboardVerticalOffset={90}>
+        <KeyboardAvoidingView style={{ flex: 1 }} behavior={Platform.OS === 'ios' ? 'padding' : 'height'} keyboardVerticalOffset={Platform.OS === 'ios' ? 90 : 0}>
           <View style={styles.chatHeader}>
             <TouchableOpacity onPress={() => setSelectedUser(null)} style={styles.backTouchable}>
               <Text style={styles.backChevron}>‹</Text>
@@ -496,13 +572,22 @@ export default function ChatScreen() {
           </View>
 
           <FlatList
+            ref={flatListRef}
             data={messages}
             keyExtractor={(item) => item.id}
             contentContainerStyle={styles.messageList}
             renderItem={({ item }) => (
               <View style={{ alignItems: item.sentByMe ? 'flex-end' : 'flex-start', marginVertical: 3 }}>
-                <View style={[styles.bubble, item.sentByMe ? styles.myBubble : styles.theirBubble]}>
-                  <Text style={item.sentByMe ? styles.myText : styles.theirText}>{item.text}</Text>
+                <View style={[
+                  styles.bubble,
+                  item.sentByMe ? styles.myBubble : styles.theirBubble,
+                  item.kind === 'image' && styles.imageBubble,
+                ]}>
+                  {item.kind === 'image' ? (
+                    <Image source={{ uri: `data:image/jpeg;base64,${item.text}` }} style={styles.messageImage} resizeMode="cover" />
+                  ) : (
+                    <Text style={item.sentByMe ? styles.myText : styles.theirText}>{item.text}</Text>
+                  )}
                 </View>
                 <Text style={styles.timestamp}>{formatTime(item.timestamp)}</Text>
               </View>
@@ -510,6 +595,9 @@ export default function ChatScreen() {
           />
 
           <View style={styles.inputRow}>
+            <TouchableOpacity style={styles.attachButton} onPress={sendImage} activeOpacity={0.7}>
+              <Text style={styles.attachButtonIcon}>📎</Text>
+            </TouchableOpacity>
             <TextInput
               style={styles.messageInput}
               placeholder="redactar mensaje..."
@@ -623,6 +711,8 @@ function createStyles(COLORS: typeof LIGHT_COLORS) {
     chatHeaderSub: { fontSize: 10, color: COLORS.textMuted, marginTop: 1, fontWeight: '600', letterSpacing: 0.3 },
     messageList: { padding: 14, paddingBottom: 10 },
     bubble: { maxWidth: '78%', paddingHorizontal: 14, paddingVertical: 10, borderRadius: 3 },
+    imageBubble: { padding: 4 },
+    messageImage: { width: 220, height: 220, borderRadius: 2 },
     myBubble: { backgroundColor: COLORS.bubbleMine, borderTopRightRadius: 0 },
     theirBubble: { backgroundColor: COLORS.bubbleTheirs, borderTopLeftRadius: 0, borderWidth: 1, borderColor: COLORS.border },
     myText: { color: '#F2F0E4', fontSize: 15, lineHeight: 20 },
@@ -644,5 +734,11 @@ function createStyles(COLORS: typeof LIGHT_COLORS) {
       backgroundColor: COLORS.accent, alignItems: 'center', justifyContent: 'center',
     },
     sendButtonIcon: { color: '#1A1712', fontSize: 16, fontWeight: '800' },
+    attachButton: {
+      width: 42, height: 42, borderRadius: 3,
+      backgroundColor: COLORS.bg, borderWidth: 1, borderColor: COLORS.border,
+      alignItems: 'center', justifyContent: 'center', marginRight: 8,
+    },
+    attachButtonIcon: { fontSize: 18 },
   });
 }
