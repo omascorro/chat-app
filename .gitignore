@@ -42,6 +42,6 @@ example
 /ios
 /android
 # credenciales sensibles
-google-services.json
+
 *firebase-adminsdk*.json
 .env

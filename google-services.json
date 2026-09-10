@@ -1,0 +1,29 @@
+{
+  "project_info": {
+    "project_number": "233268088835",
+    "project_id": "chat-app-notificaciones",
+    "storage_bucket": "chat-app-notificaciones.firebasestorage.app"
+  },
+  "client": [
+    {
+      "client_info": {
+        "mobilesdk_app_id": "1:233268088835:android:23c64dd71954c8506c7e36",
+        "android_client_info": {
+          "package_name": "com.mascorro55.chatapp"
+        }
+      },
+      "oauth_client": [],
+      "api_key": [
+        {
+          "current_key": "AIzaSyBOoJ2VDMcTm1M8b-TGXAclc8yfX8t_PgY"
+        }
+      ],
+      "services": {
+        "appinvite_service": {
+          "other_platform_oauth_client": []
+        }
+      }
+    }
+  ],
+  "configuration_version": "1"
+}
