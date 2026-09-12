@@ -104,6 +104,33 @@ function initRatchet(myUsername: string, theirUsername: string, theirPublicKeyB6
   };
 }
 
+async function persistRatchet(myUsername: string, theirUsername: string, state: RatchetState) {
+  const storageKey = `ratchet_${myUsername}_${theirUsername}`;
+  try {
+    await SecureStore.setItemAsync(storageKey, JSON.stringify({
+      sendChain: util.encodeBase64(state.sendChain),
+      recvChain: util.encodeBase64(state.recvChain),
+    }));
+  } catch (e) {
+    console.log('No se pudo guardar el estado del ratchet:', e);
+  }
+}
+
+async function loadOrCreateRatchet(myUsername: string, theirUsername: string, theirPublicKeyB64: string, mySecretKey: Uint8Array): Promise<RatchetState> {
+  const storageKey = `ratchet_${myUsername}_${theirUsername}`;
+  const stored = await SecureStore.getItemAsync(storageKey);
+  if (stored) {
+    const parsed = JSON.parse(stored);
+    return {
+      sendChain: util.decodeBase64(parsed.sendChain),
+      recvChain: util.decodeBase64(parsed.recvChain),
+    };
+  }
+  const fresh = initRatchet(myUsername, theirUsername, theirPublicKeyB64, mySecretKey);
+  await persistRatchet(myUsername, theirUsername, fresh);
+  return fresh;
+}
+
 function Avatar({ name, size = 40 }: { name: string; size?: number }) {
   return (
     <View style={[avatarStyles.square, { width: size, height: size, borderRadius: size * 0.18, backgroundColor: avatarColor(name) }]}>
@@ -245,34 +272,41 @@ export default function ChatScreen() {
     if (data.type === 'direct-message') {
       const sender = data.from;
 
-      if (!ratchets.current[sender]) {
-        const senderPublicKey = data.fromPublicKey || onlineUsersRef.current.find((u) => u.username === sender)?.publicKey;
-        if (!senderPublicKey || !myKeys.current) return;
-        ratchets.current[sender] = initRatchet(usernameRef.current, sender, senderPublicKey, myKeys.current.secretKey);
-      }
+      (async () => {
+        if (!ratchets.current[sender]) {
+          const senderPublicKey = data.fromPublicKey || onlineUsersRef.current.find((u) => u.username === sender)?.publicKey;
+          if (!senderPublicKey || !myKeys.current) return;
+          ratchets.current[sender] = await loadOrCreateRatchet(usernameRef.current, sender, senderPublicKey, myKeys.current.secretKey);
+        }
 
-      const state = ratchets.current[sender];
-      const messageKey = deriveKey(state.recvChain, 'MSG');
-      const decrypted = nacl.secretbox.open(util.decodeBase64(data.ciphertext), util.decodeBase64(data.nonce), messageKey);
-      if (!decrypted) return;
-      state.recvChain = deriveKey(state.recvChain, 'NEXT');
+        const state = ratchets.current[sender];
+        const messageKey = deriveKey(state.recvChain, 'MSG');
+        const decrypted = nacl.secretbox.open(util.decodeBase64(data.ciphertext), util.decodeBase64(data.nonce), messageKey);
+        if (!decrypted) {
+          console.log('🔴 FALLÓ AL DESCIFRAR el mensaje de', sender, '— probablemente el ratchet está desincronizado');
+          return;
+        }
+        console.log('🟢 Descifrado correctamente');
+        state.recvChain = deriveKey(state.recvChain, 'NEXT');
+        persistRatchet(usernameRef.current, sender, state);
 
-      const payloadStr = util.encodeUTF8(decrypted);
-      let parsed: { kind: 'text' | 'image'; content: string };
-      try {
-        parsed = JSON.parse(payloadStr);
-      } catch (e) {
-        parsed = { kind: 'text', content: payloadStr };
-      }
+        const payloadStr = util.encodeUTF8(decrypted);
+        let parsed: { kind: 'text' | 'image'; content: string };
+        try {
+          parsed = JSON.parse(payloadStr);
+        } catch (e) {
+          parsed = { kind: 'text', content: payloadStr };
+        }
 
-      const newMsg: Message = {
-        id: Date.now().toString() + Math.random(),
-        text: parsed.content,
-        kind: parsed.kind || 'text',
-        sentByMe: false,
-        timestamp: Date.now(),
-      };
-      setConversations((prev) => ({ ...prev, [sender]: [...(prev[sender] || []), newMsg] }));
+        const newMsg: Message = {
+          id: Date.now().toString() + Math.random(),
+          text: parsed.content,
+          kind: parsed.kind || 'text',
+          sentByMe: false,
+          timestamp: Date.now(),
+        };
+        setConversations((prev) => ({ ...prev, [sender]: [...(prev[sender] || []), newMsg] }));
+      })();
     }
   };
 
@@ -358,35 +392,39 @@ export default function ChatScreen() {
     ws.current?.close();
   };
 
-  const openConversation = (user: OnlineUser) => {
+  const resetEncryption = async () => {
+    if (!selectedUser) return;
+    const storageKey = `ratchet_${username}_${selectedUser.username}`;
+    await SecureStore.deleteItemAsync(storageKey);
+    delete ratchets.current[selectedUser.username];
+    if (myKeys.current) {
+      ratchets.current[selectedUser.username] = await loadOrCreateRatchet(username, selectedUser.username, selectedUser.publicKey, myKeys.current.secretKey);
+    }
+    console.log('🔄 Cifrado reiniciado para', selectedUser.username);
+  };
+
+  const openConversation = async (user: OnlineUser) => {
     if (!ratchets.current[user.username] && myKeys.current) {
-      ratchets.current[user.username] = initRatchet(username, user.username, user.publicKey, myKeys.current.secretKey);
+      ratchets.current[user.username] = await loadOrCreateRatchet(username, user.username, user.publicKey, myKeys.current.secretKey);
     }
     setSelectedUser(user);
   };
 
   const sendMessage = () => {
-    console.log('🟡 sendMessage llamado, texto:', inputText);
-    if (inputText.trim() === '' || !selectedUser) {
-      console.log('🔴 Cancelado: texto vacío o sin usuario seleccionado');
-      return;
-    }
+    if (inputText.trim() === '' || !selectedUser) return;
     const state = ratchets.current[selectedUser.username];
-    if (!state) {
-      console.log('🔴 Cancelado: no hay estado de ratchet para', selectedUser.username);
-      return;
-    }
+    if (!state) return;
     if (!ws.current || ws.current.readyState !== WebSocket.OPEN) {
       console.log('⚠️ No se pudo enviar: sin conexión en este momento');
       return;
     }
-    console.log('🟢 Enviando mensaje...');
 
     const payload = JSON.stringify({ kind: 'text', content: inputText });
     const messageKey = deriveKey(state.sendChain, 'MSG');
     const nonce = nacl.randomBytes(24);
     const ciphertext = nacl.secretbox(util.decodeUTF8(payload), nonce, messageKey);
     state.sendChain = deriveKey(state.sendChain, 'NEXT');
+    persistRatchet(username, selectedUser.username, state);
 
     ws.current.send(JSON.stringify({
       type: 'direct-message',
@@ -429,6 +467,7 @@ export default function ChatScreen() {
     const nonce = nacl.randomBytes(24);
     const ciphertext = nacl.secretbox(util.decodeUTF8(payload), nonce, messageKey);
     state.sendChain = deriveKey(state.sendChain, 'NEXT');
+    persistRatchet(username, selectedUser.username, state);
 
     ws.current.send(JSON.stringify({
       type: 'direct-message',
@@ -563,12 +602,15 @@ export default function ChatScreen() {
               <Text style={styles.backChevron}>‹</Text>
             </TouchableOpacity>
             <Avatar name={selectedUser.username} size={36} />
-            <View style={{ marginLeft: 10 }}>
+            <View style={{ marginLeft: 10, flex: 1 }}>
               <Text style={styles.chatHeaderName}>{selectedUser.username.toUpperCase()}</Text>
               <Text style={styles.chatHeaderSub}>
                 {selectedUser.online ? 'EN LÍNEA' : 'SIN CONEXIÓN'} · CANAL CIFRADO
               </Text>
             </View>
+            <TouchableOpacity onPress={resetEncryption} style={styles.logoutButton} activeOpacity={0.7}>
+              <Text style={styles.logoutButtonText}>REINICIAR</Text>
+            </TouchableOpacity>
           </View>
 
           <FlatList
