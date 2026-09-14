@@ -72,8 +72,9 @@ function formatTime(ts: number) {
   return d.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
 }
 
-type OnlineUser = { username: string; publicKey: string; online: boolean };
-type Message = { id: string; text: string; kind: 'text' | 'image'; sentByMe: boolean; timestamp: number };
+type OnlineUser = { username: string; publicKey: string; online: boolean; profilePicture?: string };
+type Message = { id: string; text: string; kind: 'text' | 'image' | 'sticker'; sentByMe: boolean; timestamp: number; status?: 'sent' | 'read' | 'failed' };
+const STICKERS = ['🦅', '🎖️', '🫡', '💪', '🔥', '❤️', '😂', '👍', '💥', '🎯', '☕', '🌙'];
 type RatchetState = { sendChain: Uint8Array; recvChain: Uint8Array };
 
 function concatBytes(...arrays: Uint8Array[]): Uint8Array {
@@ -131,7 +132,15 @@ async function loadOrCreateRatchet(myUsername: string, theirUsername: string, th
   return fresh;
 }
 
-function Avatar({ name, size = 40 }: { name: string; size?: number }) {
+function Avatar({ name, size = 40, photoBase64 }: { name: string; size?: number; photoBase64?: string | null }) {
+  if (photoBase64) {
+    return (
+      <Image
+        source={{ uri: `data:image/jpeg;base64,${photoBase64}` }}
+        style={{ width: size, height: size, borderRadius: size * 0.18 }}
+      />
+    );
+  }
   return (
     <View style={[avatarStyles.square, { width: size, height: size, borderRadius: size * 0.18, backgroundColor: avatarColor(name) }]}>
       <Text style={[avatarStyles.letter, { fontSize: size * 0.42 }]}>{name.charAt(0).toUpperCase()}</Text>
@@ -145,18 +154,22 @@ export default function ChatScreen() {
   const COLORS = isDark ? DARK_COLORS : LIGHT_COLORS;
   const styles = useMemo(() => createStyles(COLORS), [isDark]);
 
-  const [authMode, setAuthMode] = useState<'login' | 'register'>('login');
+  const [authMode, setAuthMode] = useState<'login' | 'register' | 'reset'>('login');
   const [usernameInput, setUsernameInput] = useState('');
   const [passwordInput, setPasswordInput] = useState('');
+  const [recoveryCodeInput, setRecoveryCodeInput] = useState('');
   const [authError, setAuthError] = useState('');
   const [authenticated, setAuthenticated] = useState(false);
   const [username, setUsername] = useState('');
+  const [recoveryCodeToShow, setRecoveryCodeToShow] = useState<string | null>(null);
 
   const [connected, setConnected] = useState(false);
   const [onlineUsers, setOnlineUsers] = useState<OnlineUser[]>([]);
   const [selectedUser, setSelectedUser] = useState<OnlineUser | null>(null);
   const [conversations, setConversations] = useState<Record<string, Message[]>>({});
   const [inputText, setInputText] = useState('');
+  const [showStickers, setShowStickers] = useState(false);
+  const [myProfilePicture, setMyProfilePicture] = useState<string | null>(null);
 
   const ws = useRef<WebSocket | null>(null);
   const myKeys = useRef<nacl.BoxKeyPair | null>(null);
@@ -231,14 +244,30 @@ export default function ChatScreen() {
 
     if (data.type === 'register-result') {
       if (data.success && pendingAuth.current && ws.current) {
-        ws.current.send(JSON.stringify({
-          type: 'login',
-          username: pendingAuth.current.username,
-          password: pendingAuth.current.password,
-          publicKey: util.encodeBase64(myKeys.current!.publicKey),
-        }));
+        if (data.recoveryCode) {
+          setRecoveryCodeToShow(data.recoveryCode);
+        } else {
+          ws.current.send(JSON.stringify({
+            type: 'login',
+            username: pendingAuth.current.username,
+            password: pendingAuth.current.password,
+            publicKey: util.encodeBase64(myKeys.current!.publicKey),
+          }));
+        }
       } else {
         setAuthError(data.error || 'Error al registrar');
+      }
+      return;
+    }
+
+    if (data.type === 'reset-password-result') {
+      if (data.success) {
+        setAuthMode('login');
+        setPasswordInput('');
+        setRecoveryCodeInput('');
+        setAuthError('');
+      } else {
+        setAuthError(data.error || 'Error al restablecer la contraseña');
       }
       return;
     }
@@ -265,7 +294,21 @@ export default function ChatScreen() {
 
     if (data.type === 'user-list') {
       const others = data.users.filter((u: OnlineUser) => u.username !== usernameRef.current);
+      const me = data.users.find((u: OnlineUser) => u.username === usernameRef.current);
+      if (me) setMyProfilePicture(me.profilePicture || null);
       setOnlineUsers(others);
+      return;
+    }
+
+    if (data.type === 'read-receipt') {
+      setConversations((prev) => {
+        const convo = prev[data.from];
+        if (!convo) return prev;
+        return {
+          ...prev,
+          [data.from]: convo.map((m) => (m.id === data.messageId ? { ...m, status: 'read' } : m)),
+        };
+      });
       return;
     }
 
@@ -291,21 +334,23 @@ export default function ChatScreen() {
         persistRatchet(usernameRef.current, sender, state);
 
         const payloadStr = util.encodeUTF8(decrypted);
-        let parsed: { kind: 'text' | 'image'; content: string };
+        let parsed: { kind: 'text' | 'image' | 'sticker'; content: string; id: string };
         try {
           parsed = JSON.parse(payloadStr);
         } catch (e) {
-          parsed = { kind: 'text', content: payloadStr };
+          parsed = { kind: 'text', content: payloadStr, id: Date.now().toString() + Math.random() };
         }
 
         const newMsg: Message = {
-          id: Date.now().toString() + Math.random(),
+          id: parsed.id,
           text: parsed.content,
           kind: parsed.kind || 'text',
           sentByMe: false,
           timestamp: Date.now(),
         };
         setConversations((prev) => ({ ...prev, [sender]: [...(prev[sender] || []), newMsg] }));
+
+        ws.current?.send(JSON.stringify({ type: 'read-receipt', to: sender, messageId: parsed.id }));
       })();
     }
   };
@@ -377,6 +422,33 @@ export default function ChatScreen() {
     }));
   };
 
+  const submitReset = () => {
+    if (!ws.current || ws.current.readyState !== WebSocket.OPEN) return;
+    const uname = usernameInput.trim();
+    if (uname === '' || recoveryCodeInput.trim() === '' || passwordInput === '') {
+      setAuthError('Completa usuario, código de recuperación y nueva contraseña');
+      return;
+    }
+    setAuthError('');
+    ws.current.send(JSON.stringify({
+      type: 'reset-password',
+      username: uname,
+      recoveryCode: recoveryCodeInput.trim(),
+      newPassword: passwordInput,
+    }));
+  };
+
+  const confirmRecoveryCode = () => {
+    if (!ws.current || !pendingAuth.current) return;
+    ws.current.send(JSON.stringify({
+      type: 'login',
+      username: pendingAuth.current.username,
+      password: pendingAuth.current.password,
+      publicKey: util.encodeBase64(myKeys.current!.publicKey),
+    }));
+    setRecoveryCodeToShow(null);
+  };
+
   const logout = () => {
     pendingAuth.current = null;
     hasLoadedHistory.current = false;
@@ -414,12 +486,19 @@ export default function ChatScreen() {
     if (inputText.trim() === '' || !selectedUser) return;
     const state = ratchets.current[selectedUser.username];
     if (!state) return;
+
+    const msgId = Date.now().toString() + Math.random().toString(36).slice(2);
+    const textToSend = inputText;
+    setInputText('');
+
     if (!ws.current || ws.current.readyState !== WebSocket.OPEN) {
       console.log('⚠️ No se pudo enviar: sin conexión en este momento');
+      const failedMsg: Message = { id: msgId, text: textToSend, kind: 'text', sentByMe: true, timestamp: Date.now(), status: 'failed' };
+      setConversations((prev) => ({ ...prev, [selectedUser.username]: [...(prev[selectedUser.username] || []), failedMsg] }));
       return;
     }
 
-    const payload = JSON.stringify({ kind: 'text', content: inputText });
+    const payload = JSON.stringify({ kind: 'text', content: textToSend, id: msgId });
     const messageKey = deriveKey(state.sendChain, 'MSG');
     const nonce = nacl.randomBytes(24);
     const ciphertext = nacl.secretbox(util.decodeUTF8(payload), nonce, messageKey);
@@ -433,9 +512,93 @@ export default function ChatScreen() {
       nonce: util.encodeBase64(nonce),
     }));
 
-    const newMsg: Message = { id: Date.now().toString(), text: inputText, kind: 'text', sentByMe: true, timestamp: Date.now() };
+    const newMsg: Message = { id: msgId, text: textToSend, kind: 'text', sentByMe: true, timestamp: Date.now(), status: 'sent' };
     setConversations((prev) => ({ ...prev, [selectedUser.username]: [...(prev[selectedUser.username] || []), newMsg] }));
-    setInputText('');
+  };
+
+  const retrySend = (msg: Message) => {
+    if (!selectedUser) return;
+    const state = ratchets.current[selectedUser.username];
+    if (!state || !ws.current || ws.current.readyState !== WebSocket.OPEN) {
+      console.log('⚠️ Sigue sin conexión, no se pudo reintentar');
+      return;
+    }
+
+    const payload = JSON.stringify({ kind: msg.kind, content: msg.text, id: msg.id });
+    const messageKey = deriveKey(state.sendChain, 'MSG');
+    const nonce = nacl.randomBytes(24);
+    const ciphertext = nacl.secretbox(util.decodeUTF8(payload), nonce, messageKey);
+    state.sendChain = deriveKey(state.sendChain, 'NEXT');
+    persistRatchet(username, selectedUser.username, state);
+
+    ws.current.send(JSON.stringify({
+      type: 'direct-message',
+      to: selectedUser.username,
+      ciphertext: util.encodeBase64(ciphertext),
+      nonce: util.encodeBase64(nonce),
+    }));
+
+    setConversations((prev) => ({
+      ...prev,
+      [selectedUser.username]: (prev[selectedUser.username] || []).map((m) => (m.id === msg.id ? { ...m, status: 'sent' } : m)),
+    }));
+  };
+
+  const sendSticker = (emoji: string) => {
+    if (!selectedUser) return;
+    const state = ratchets.current[selectedUser.username];
+    if (!state) return;
+
+    const msgId = Date.now().toString() + Math.random().toString(36).slice(2);
+    setShowStickers(false);
+
+    if (!ws.current || ws.current.readyState !== WebSocket.OPEN) {
+      console.log('⚠️ No se pudo enviar: sin conexión en este momento');
+      const failedMsg: Message = { id: msgId, text: emoji, kind: 'sticker', sentByMe: true, timestamp: Date.now(), status: 'failed' };
+      setConversations((prev) => ({ ...prev, [selectedUser.username]: [...(prev[selectedUser.username] || []), failedMsg] }));
+      return;
+    }
+
+    const payload = JSON.stringify({ kind: 'sticker', content: emoji, id: msgId });
+    const messageKey = deriveKey(state.sendChain, 'MSG');
+    const nonce = nacl.randomBytes(24);
+    const ciphertext = nacl.secretbox(util.decodeUTF8(payload), nonce, messageKey);
+    state.sendChain = deriveKey(state.sendChain, 'NEXT');
+    persistRatchet(username, selectedUser.username, state);
+
+    ws.current.send(JSON.stringify({
+      type: 'direct-message',
+      to: selectedUser.username,
+      ciphertext: util.encodeBase64(ciphertext),
+      nonce: util.encodeBase64(nonce),
+    }));
+
+    const newMsg: Message = { id: msgId, text: emoji, kind: 'sticker', sentByMe: true, timestamp: Date.now(), status: 'sent' };
+    setConversations((prev) => ({ ...prev, [selectedUser.username]: [...(prev[selectedUser.username] || []), newMsg] }));
+  };
+
+  const updateProfilePicture = async () => {
+    const permission = await ImagePicker.requestMediaLibraryPermissionsAsync();
+    if (!permission.granted) {
+      console.log('Permiso de galería no concedido');
+      return;
+    }
+
+    const result = await ImagePicker.launchImageLibraryAsync({
+      mediaTypes: ImagePicker.MediaTypeOptions.Images,
+      quality: 0.3,
+      base64: true,
+      allowsEditing: true,
+      aspect: [1, 1],
+    });
+
+    if (result.canceled || !result.assets || !result.assets[0].base64) return;
+    if (!ws.current || ws.current.readyState !== WebSocket.OPEN) {
+      console.log('⚠️ No se pudo actualizar: sin conexión en este momento');
+      return;
+    }
+
+    ws.current.send(JSON.stringify({ type: 'update-profile-picture', profilePicture: result.assets[0].base64 }));
   };
 
   const sendImage = async () => {
@@ -456,13 +619,18 @@ export default function ChatScreen() {
     });
 
     if (result.canceled || !result.assets || !result.assets[0].base64) return;
+
+    const base64Image = result.assets[0].base64;
+    const msgId = Date.now().toString() + Math.random().toString(36).slice(2);
+
     if (!ws.current || ws.current.readyState !== WebSocket.OPEN) {
       console.log('⚠️ No se pudo enviar: sin conexión en este momento');
+      const failedMsg: Message = { id: msgId, text: base64Image, kind: 'image', sentByMe: true, timestamp: Date.now(), status: 'failed' };
+      setConversations((prev) => ({ ...prev, [selectedUser.username]: [...(prev[selectedUser.username] || []), failedMsg] }));
       return;
     }
 
-    const base64Image = result.assets[0].base64;
-    const payload = JSON.stringify({ kind: 'image', content: base64Image });
+    const payload = JSON.stringify({ kind: 'image', content: base64Image, id: msgId });
     const messageKey = deriveKey(state.sendChain, 'MSG');
     const nonce = nacl.randomBytes(24);
     const ciphertext = nacl.secretbox(util.decodeUTF8(payload), nonce, messageKey);
@@ -476,11 +644,37 @@ export default function ChatScreen() {
       nonce: util.encodeBase64(nonce),
     }));
 
-    const newMsg: Message = { id: Date.now().toString(), text: base64Image, kind: 'image', sentByMe: true, timestamp: Date.now() };
+    const newMsg: Message = { id: msgId, text: base64Image, kind: 'image', sentByMe: true, timestamp: Date.now(), status: 'sent' };
     setConversations((prev) => ({ ...prev, [selectedUser.username]: [...(prev[selectedUser.username] || []), newMsg] }));
   };
 
   if (!authenticated) {
+    if (recoveryCodeToShow) {
+      return (
+        <>
+          <StatusBar style={isDark ? 'light' : 'dark'} />
+          <SafeAreaView style={styles.authWrapper} edges={['top', 'bottom']}>
+            <View style={styles.authCard}>
+              <View style={styles.logoBadge}>
+                <Text style={styles.logoText}>🔑</Text>
+              </View>
+              <Text style={styles.appName}>GUARDA TU CÓDIGO</Text>
+              <View style={styles.appNameUnderline} />
+              <Text style={styles.appTagline}>
+                Si algún día olvidas tu contraseña, este es el ÚNICO código que te permitirá recuperar tu cuenta. No se puede volver a mostrar.
+              </Text>
+              <View style={styles.recoveryCodeBox}>
+                <Text style={styles.recoveryCodeText}>{recoveryCodeToShow}</Text>
+              </View>
+              <TouchableOpacity style={styles.primaryButton} onPress={confirmRecoveryCode} activeOpacity={0.8}>
+                <Text style={styles.primaryButtonText}>YA LO GUARDÉ, CONTINUAR</Text>
+              </TouchableOpacity>
+            </View>
+          </SafeAreaView>
+        </>
+      );
+    }
+
     return (
       <>
         <StatusBar style={isDark ? 'light' : 'dark'} />
@@ -500,7 +694,9 @@ export default function ChatScreen() {
               <Text style={styles.connectionText}>{connected ? 'ENLACE ACTIVO' : 'CONECTANDO...'}</Text>
             </View>
 
-            <Text style={styles.formTitle}>{authMode === 'login' ? 'ACCESO AUTORIZADO' : 'ALTA DE OPERADOR'}</Text>
+            <Text style={styles.formTitle}>
+              {authMode === 'login' ? 'ACCESO AUTORIZADO' : authMode === 'register' ? 'ALTA DE OPERADOR' : 'RESTABLECER CLAVE'}
+            </Text>
 
             <Text style={styles.inputLabel}>IDENTIFICADOR</Text>
             <TextInput
@@ -511,7 +707,22 @@ export default function ChatScreen() {
               value={usernameInput}
               onChangeText={setUsernameInput}
             />
-            <Text style={styles.inputLabel}>CLAVE DE ACCESO</Text>
+
+            {authMode === 'reset' && (
+              <>
+                <Text style={styles.inputLabel}>CÓDIGO DE RECUPERACIÓN</Text>
+                <TextInput
+                  style={styles.input}
+                  placeholder="código que guardaste al registrarte"
+                  placeholderTextColor={COLORS.textMuted}
+                  autoCapitalize="characters"
+                  value={recoveryCodeInput}
+                  onChangeText={setRecoveryCodeInput}
+                />
+              </>
+            )}
+
+            <Text style={styles.inputLabel}>{authMode === 'reset' ? 'NUEVA CLAVE DE ACCESO' : 'CLAVE DE ACCESO'}</Text>
             <TextInput
               style={styles.input}
               placeholder="contraseña"
@@ -523,13 +734,25 @@ export default function ChatScreen() {
 
             {authError !== '' && <Text style={styles.errorText}>⚠ {authError}</Text>}
 
-            <TouchableOpacity style={styles.primaryButton} onPress={submitAuth} activeOpacity={0.8}>
-              <Text style={styles.primaryButtonText}>{authMode === 'login' ? 'INGRESAR' : 'REGISTRAR'}</Text>
+            <TouchableOpacity
+              style={styles.primaryButton}
+              onPress={authMode === 'login' ? submitAuth : authMode === 'register' ? submitAuth : submitReset}
+              activeOpacity={0.8}
+            >
+              <Text style={styles.primaryButtonText}>
+                {authMode === 'login' ? 'INGRESAR' : authMode === 'register' ? 'REGISTRAR' : 'RESTABLECER'}
+              </Text>
             </TouchableOpacity>
+
+            {authMode === 'login' && (
+              <TouchableOpacity onPress={() => { setAuthMode('reset'); setAuthError(''); }}>
+                <Text style={styles.switchText}>¿OLVIDASTE TU CONTRASEÑA?</Text>
+              </TouchableOpacity>
+            )}
 
             <TouchableOpacity onPress={() => { setAuthMode(authMode === 'login' ? 'register' : 'login'); setAuthError(''); }}>
               <Text style={styles.switchText}>
-                {authMode === 'login' ? 'SIN CREDENCIALES · ' : 'YA REGISTRADO · '}
+                {authMode === 'login' ? 'SIN CREDENCIALES · ' : authMode === 'register' ? 'YA REGISTRADO · ' : 'VOLVER A · '}
                 <Text style={styles.switchTextBold}>{authMode === 'login' ? 'DAR DE ALTA' : 'INICIAR SESIÓN'}</Text>
               </Text>
             </TouchableOpacity>
@@ -546,7 +769,9 @@ export default function ChatScreen() {
         <SafeAreaView style={styles.container} edges={['top', 'bottom']}>
           <View style={styles.header}>
             <View style={styles.headerRow}>
-              <Avatar name={username} size={40} />
+              <TouchableOpacity onPress={updateProfilePicture} activeOpacity={0.7}>
+                <Avatar name={username} size={40} photoBase64={myProfilePicture} />
+              </TouchableOpacity>
               <View style={{ marginLeft: 12, flex: 1 }}>
                 <Text style={styles.headerTitle}>{username.toUpperCase()}</Text>
                 <Text style={styles.headerSubtitle}>{connected ? '● ENLACE ACTIVO' : '● SIN ENLACE'}</Text>
@@ -574,7 +799,7 @@ export default function ChatScreen() {
             renderItem={({ item }) => (
               <TouchableOpacity style={styles.userRow} onPress={() => openConversation(item)} activeOpacity={0.7}>
                 <View>
-                  <Avatar name={item.username} />
+                  <Avatar name={item.username} photoBase64={item.profilePicture} />
                   <View style={[styles.statusDot, { backgroundColor: item.online ? '#6B7A3A' : '#7A745F' }]} />
                 </View>
                 <View style={{ marginLeft: 12, flex: 1 }}>
@@ -601,7 +826,7 @@ export default function ChatScreen() {
             <TouchableOpacity onPress={() => setSelectedUser(null)} style={styles.backTouchable}>
               <Text style={styles.backChevron}>‹</Text>
             </TouchableOpacity>
-            <Avatar name={selectedUser.username} size={36} />
+            <Avatar name={selectedUser.username} size={36} photoBase64={selectedUser.profilePicture} />
             <View style={{ marginLeft: 10, flex: 1 }}>
               <Text style={styles.chatHeaderName}>{selectedUser.username.toUpperCase()}</Text>
               <Text style={styles.chatHeaderSub}>
@@ -620,23 +845,57 @@ export default function ChatScreen() {
             contentContainerStyle={styles.messageList}
             renderItem={({ item }) => (
               <View style={{ alignItems: item.sentByMe ? 'flex-end' : 'flex-start', marginVertical: 3 }}>
-                <View style={[
-                  styles.bubble,
-                  item.sentByMe ? styles.myBubble : styles.theirBubble,
-                  item.kind === 'image' && styles.imageBubble,
-                ]}>
-                  {item.kind === 'image' ? (
-                    <Image source={{ uri: `data:image/jpeg;base64,${item.text}` }} style={styles.messageImage} resizeMode="cover" />
-                  ) : (
-                    <Text style={item.sentByMe ? styles.myText : styles.theirText}>{item.text}</Text>
+                {item.kind === 'sticker' ? (
+                  <Text style={styles.stickerText}>{item.text}</Text>
+                ) : (
+                  <View style={[
+                    styles.bubble,
+                    item.sentByMe ? styles.myBubble : styles.theirBubble,
+                    item.kind === 'image' && styles.imageBubble,
+                  ]}>
+                    {item.kind === 'image' ? (
+                      <Image source={{ uri: `data:image/jpeg;base64,${item.text}` }} style={styles.messageImage} resizeMode="cover" />
+                    ) : (
+                      <Text style={item.sentByMe ? styles.myText : styles.theirText}>{item.text}</Text>
+                    )}
+                  </View>
+                )}
+                <View style={{ flexDirection: 'row', alignItems: 'center' }}>
+                  <Text style={styles.timestamp}>{formatTime(item.timestamp)}</Text>
+                  {item.sentByMe && item.status === 'failed' && (
+                    <TouchableOpacity onPress={() => retrySend(item)} activeOpacity={0.7}>
+                      <Text style={styles.checkmarkFailed}>⚠ NO ENVIADO · REINTENTAR</Text>
+                    </TouchableOpacity>
+                  )}
+                  {item.sentByMe && item.status !== 'failed' && (
+                    <Text style={[styles.checkmark, item.status === 'read' && styles.checkmarkRead]}>
+                      {item.status === 'read' ? '✓✓' : '✓'}
+                    </Text>
                   )}
                 </View>
-                <Text style={styles.timestamp}>{formatTime(item.timestamp)}</Text>
               </View>
             )}
           />
 
+          {showStickers && (
+            <View style={styles.stickerPanel}>
+              <FlatList
+                data={STICKERS}
+                keyExtractor={(item) => item}
+                numColumns={6}
+                renderItem={({ item }) => (
+                  <TouchableOpacity onPress={() => sendSticker(item)} style={styles.stickerOption} activeOpacity={0.6}>
+                    <Text style={styles.stickerOptionText}>{item}</Text>
+                  </TouchableOpacity>
+                )}
+              />
+            </View>
+          )}
+
           <View style={styles.inputRow}>
+            <TouchableOpacity style={styles.attachButton} onPress={() => setShowStickers((v) => !v)} activeOpacity={0.7}>
+              <Text style={styles.attachButtonIcon}>😀</Text>
+            </TouchableOpacity>
             <TouchableOpacity style={styles.attachButton} onPress={sendImage} activeOpacity={0.7}>
               <Text style={styles.attachButtonIcon}>📎</Text>
             </TouchableOpacity>
@@ -713,6 +972,11 @@ function createStyles(COLORS: typeof LIGHT_COLORS) {
     primaryButtonText: { color: '#1A1712', fontWeight: '800', fontSize: 14, letterSpacing: 1.5 },
     switchText: { color: COLORS.textMuted, marginTop: 18, fontSize: 11, letterSpacing: 0.5 },
     switchTextBold: { color: COLORS.accent, fontWeight: '800' },
+    recoveryCodeBox: {
+      width: '100%', backgroundColor: COLORS.card, borderWidth: 2, borderColor: COLORS.accent,
+      borderRadius: 3, paddingVertical: 20, alignItems: 'center', marginBottom: 24,
+    },
+    recoveryCodeText: { fontSize: 26, fontWeight: '800', color: COLORS.accent, letterSpacing: 4 },
     header: { paddingHorizontal: 16, paddingTop: 12, paddingBottom: 14, backgroundColor: COLORS.card, borderBottomWidth: 2, borderBottomColor: COLORS.primary },
     headerRow: { flexDirection: 'row', alignItems: 'center' },
     headerTitle: { fontSize: 15, fontWeight: '800', color: COLORS.text, letterSpacing: 1 },
@@ -760,6 +1024,9 @@ function createStyles(COLORS: typeof LIGHT_COLORS) {
     myText: { color: '#F2F0E4', fontSize: 15, lineHeight: 20 },
     theirText: { color: COLORS.text, fontSize: 15, lineHeight: 20 },
     timestamp: { fontSize: 9, color: COLORS.textMuted, marginTop: 3, marginHorizontal: 4, fontWeight: '600' },
+    checkmark: { fontSize: 10, color: COLORS.textMuted, marginTop: 3, fontWeight: '700' },
+    checkmarkRead: { color: COLORS.accent },
+    checkmarkFailed: { fontSize: 10, color: COLORS.danger, marginTop: 3, marginLeft: 6, fontWeight: '800' },
     inputRow: {
       flexDirection: 'row', alignItems: 'flex-end',
       paddingHorizontal: 12, paddingVertical: 10,
@@ -782,5 +1049,14 @@ function createStyles(COLORS: typeof LIGHT_COLORS) {
       alignItems: 'center', justifyContent: 'center', marginRight: 8,
     },
     attachButtonIcon: { fontSize: 18 },
+    stickerText: { fontSize: 72 },
+    stickerPanel: {
+      backgroundColor: COLORS.card, borderTopWidth: 2, borderTopColor: COLORS.primary,
+      paddingVertical: 10, paddingHorizontal: 8, maxHeight: 160,
+    },
+    stickerOption: {
+      flex: 1, alignItems: 'center', justifyContent: 'center', paddingVertical: 8,
+    },
+    stickerOptionText: { fontSize: 30 },
   });
 }
