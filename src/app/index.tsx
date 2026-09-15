@@ -9,6 +9,7 @@ import {
   FlatList,
   Image,
   KeyboardAvoidingView,
+  Linking,
   Platform,
   StyleSheet,
   Text,
@@ -145,6 +146,28 @@ function Avatar({ name, size = 40, photoBase64 }: { name: string; size?: number;
     <View style={[avatarStyles.square, { width: size, height: size, borderRadius: size * 0.18, backgroundColor: avatarColor(name) }]}>
       <Text style={[avatarStyles.letter, { fontSize: size * 0.42 }]}>{name.charAt(0).toUpperCase()}</Text>
     </View>
+  );
+}
+
+const URL_SPLIT_REGEX = /((?:https?:\/\/|www\.)[^\s]+)/gi;
+const URL_TEST_REGEX = /^(?:https?:\/\/|www\.)/i;
+
+function LinkableText({ text, textStyle, linkStyle }: { text: string; textStyle: any; linkStyle: any }) {
+  const parts = text.split(URL_SPLIT_REGEX);
+  return (
+    <Text style={textStyle}>
+      {parts.map((part, i) => {
+        if (URL_TEST_REGEX.test(part)) {
+          const url = part.toLowerCase().startsWith('http') ? part : `https://${part}`;
+          return (
+            <Text key={i} style={linkStyle} onPress={() => Linking.openURL(url).catch(() => {})}>
+              {part}
+            </Text>
+          );
+        }
+        return part;
+      })}
+    </Text>
   );
 }
 
@@ -856,7 +879,11 @@ export default function ChatScreen() {
                     {item.kind === 'image' ? (
                       <Image source={{ uri: `data:image/jpeg;base64,${item.text}` }} style={styles.messageImage} resizeMode="cover" />
                     ) : (
-                      <Text style={item.sentByMe ? styles.myText : styles.theirText}>{item.text}</Text>
+                      <LinkableText
+                        text={item.text}
+                        textStyle={item.sentByMe ? styles.myText : styles.theirText}
+                        linkStyle={item.sentByMe ? styles.myLinkText : styles.theirLinkText}
+                      />
                     )}
                   </View>
                 )}
@@ -1023,6 +1050,8 @@ function createStyles(COLORS: typeof LIGHT_COLORS) {
     theirBubble: { backgroundColor: COLORS.bubbleTheirs, borderTopLeftRadius: 0, borderWidth: 1, borderColor: COLORS.border },
     myText: { color: '#F2F0E4', fontSize: 15, lineHeight: 20 },
     theirText: { color: COLORS.text, fontSize: 15, lineHeight: 20 },
+    myLinkText: { color: '#F2F0E4', fontSize: 15, lineHeight: 20, textDecorationLine: 'underline', fontWeight: '700' },
+    theirLinkText: { color: COLORS.accent, fontSize: 15, lineHeight: 20, textDecorationLine: 'underline', fontWeight: '700' },
     timestamp: { fontSize: 9, color: COLORS.textMuted, marginTop: 3, marginHorizontal: 4, fontWeight: '600' },
     checkmark: { fontSize: 10, color: COLORS.textMuted, marginTop: 3, fontWeight: '700' },
     checkmarkRead: { color: COLORS.accent },
