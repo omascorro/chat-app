@@ -1,9 +1,11 @@
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import Constants from 'expo-constants';
+import * as FileSystem from 'expo-file-system/legacy';
 import * as ImagePicker from 'expo-image-picker';
 import * as Notifications from 'expo-notifications';
 import * as SecureStore from 'expo-secure-store';
 import { StatusBar } from 'expo-status-bar';
+import { useVideoPlayer, VideoView } from 'expo-video';
 import { useEffect, useMemo, useRef, useState } from 'react';
 import {
   FlatList,
@@ -22,6 +24,7 @@ import 'react-native-get-random-values';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import nacl from 'tweetnacl';
 import util from 'tweetnacl-util';
+import { supabase } from '../lib/supabase';
 
 const SERVER_URL = 'wss://chat-backend-p5ny.onrender.com';
 
@@ -74,9 +77,9 @@ function formatTime(ts: number) {
 }
 
 type OnlineUser = { username: string; publicKey: string; online: boolean; profilePicture?: string };
-type Message = { id: string; text: string; kind: 'text' | 'image' | 'sticker'; sentByMe: boolean; timestamp: number; status?: 'sent' | 'read' | 'failed' };
+type Message = { id: string; text: string; kind: 'text' | 'image' | 'sticker' | 'video'; sentByMe: boolean; timestamp: number; status?: 'sent' | 'read' | 'failed' };
 const STICKERS = ['🦅', '🎖️', '🫡', '💪', '🔥', '❤️', '😂', '👍', '💥', '🎯', '☕', '🌙'];
-type RatchetState = { sendChain: Uint8Array; recvChain: Uint8Array };
+type RatchetState = { sendChain: Uint8Array; recvChain: Uint8Array; sendCounter: number; recvCounter: number; skippedKeys: Record<number, string> };
 
 function concatBytes(...arrays: Uint8Array[]): Uint8Array {
   const total = arrays.reduce((sum, a) => sum + a.length, 0);
@@ -95,6 +98,68 @@ function deriveKey(chainKey: Uint8Array, label: string): Uint8Array {
   return hash.slice(0, 32);
 }
 
+const MAX_SKIPPED_MESSAGES = 2000;
+const MAX_STORED_SKIPPED_KEYS = 2000;
+
+function stepChain(chain: Uint8Array): { messageKey: Uint8Array; nextChain: Uint8Array } {
+  const messageKey = deriveKey(chain, 'MSG');
+  const nextChain = deriveKey(chain, 'NEXT');
+  return { messageKey, nextChain };
+}
+
+function takeSendKey(state: RatchetState): { messageKey: Uint8Array; counter: number } {
+  const counter = state.sendCounter;
+  const stepped = stepChain(state.sendChain);
+  state.sendChain = stepped.nextChain;
+  state.sendCounter = counter + 1;
+  return { messageKey: stepped.messageKey, counter };
+}
+
+function resolveRecvKey(state: RatchetState, counter: number): Uint8Array | null {
+  if (counter === state.recvCounter) {
+    const stepped = stepChain(state.recvChain);
+    state.recvChain = stepped.nextChain;
+    state.recvCounter = counter + 1;
+    return stepped.messageKey;
+  }
+
+  if (counter > state.recvCounter) {
+    const skipCount = counter - state.recvCounter;
+    if (skipCount > MAX_SKIPPED_MESSAGES) {
+      console.log('Demasiados mensajes saltados (' + skipCount + '), no se puede sincronizar automaticamente');
+      return null;
+    }
+
+    let chain = state.recvChain;
+    let idx = state.recvCounter;
+    while (idx < counter) {
+      const stepped = stepChain(chain);
+      state.skippedKeys[idx] = util.encodeBase64(stepped.messageKey);
+      chain = stepped.nextChain;
+      idx += 1;
+    }
+
+    const finalStep = stepChain(chain);
+    state.recvChain = finalStep.nextChain;
+    state.recvCounter = counter + 1;
+
+    const storedIndexes = Object.keys(state.skippedKeys).map(Number).sort((a, b) => a - b);
+    if (storedIndexes.length > MAX_STORED_SKIPPED_KEYS) {
+      const toRemove = storedIndexes.slice(0, storedIndexes.length - MAX_STORED_SKIPPED_KEYS);
+      for (const k of toRemove) delete state.skippedKeys[k];
+    }
+
+    return finalStep.messageKey;
+  }
+
+  const stored = state.skippedKeys[counter];
+  if (stored) {
+    delete state.skippedKeys[counter];
+    return util.decodeBase64(stored);
+  }
+  return null;
+}
+
 function initRatchet(myUsername: string, theirUsername: string, theirPublicKeyB64: string, mySecretKey: Uint8Array): RatchetState {
   const sharedSecret = nacl.box.before(util.decodeBase64(theirPublicKeyB64), mySecretKey);
   const chainA = deriveKey(sharedSecret, 'A2B_INIT');
@@ -103,6 +168,9 @@ function initRatchet(myUsername: string, theirUsername: string, theirPublicKeyB6
   return {
     sendChain: amFirst ? chainA : chainB,
     recvChain: amFirst ? chainB : chainA,
+    sendCounter: 0,
+    recvCounter: 0,
+    skippedKeys: {},
   };
 }
 
@@ -112,6 +180,9 @@ async function persistRatchet(myUsername: string, theirUsername: string, state: 
     await SecureStore.setItemAsync(storageKey, JSON.stringify({
       sendChain: util.encodeBase64(state.sendChain),
       recvChain: util.encodeBase64(state.recvChain),
+      sendCounter: state.sendCounter,
+      recvCounter: state.recvCounter,
+      skippedKeys: state.skippedKeys,
     }));
   } catch (e) {
     console.log('No se pudo guardar el estado del ratchet:', e);
@@ -126,6 +197,9 @@ async function loadOrCreateRatchet(myUsername: string, theirUsername: string, th
     return {
       sendChain: util.decodeBase64(parsed.sendChain),
       recvChain: util.decodeBase64(parsed.recvChain),
+      sendCounter: typeof parsed.sendCounter === 'number' ? parsed.sendCounter : 0,
+      recvCounter: typeof parsed.recvCounter === 'number' ? parsed.recvCounter : 0,
+      skippedKeys: parsed.skippedKeys || {},
     };
   }
   const fresh = initRatchet(myUsername, theirUsername, theirPublicKeyB64, mySecretKey);
@@ -168,6 +242,20 @@ function LinkableText({ text, textStyle, linkStyle }: { text: string; textStyle:
         return part;
       })}
     </Text>
+  );
+}
+
+function VideoBubble({ uri, style }: { uri: string; style: any }) {
+  const player = useVideoPlayer(uri, (p) => {
+    p.loop = false;
+  });
+  return (
+    <VideoView
+      player={player}
+      style={style}
+      nativeControls
+      contentFit="cover"
+    />
   );
 }
 
@@ -346,27 +434,51 @@ export default function ChatScreen() {
         }
 
         const state = ratchets.current[sender];
-        const messageKey = deriveKey(state.recvChain, 'MSG');
+        const incomingCounter = typeof data.counter === 'number' ? data.counter : state.recvCounter;
+        const messageKey = resolveRecvKey(state, incomingCounter);
+        if (!messageKey) {
+          persistRatchet(usernameRef.current, sender, state);
+          return;
+        }
         const decrypted = nacl.secretbox.open(util.decodeBase64(data.ciphertext), util.decodeBase64(data.nonce), messageKey);
         if (!decrypted) {
           console.log('🔴 FALLÓ AL DESCIFRAR el mensaje de', sender, '— probablemente el ratchet está desincronizado');
           return;
         }
         console.log('🟢 Descifrado correctamente');
-        state.recvChain = deriveKey(state.recvChain, 'NEXT');
         persistRatchet(usernameRef.current, sender, state);
 
         const payloadStr = util.encodeUTF8(decrypted);
-        let parsed: { kind: 'text' | 'image' | 'sticker'; content: string; id: string };
+        let parsed: { kind: 'text' | 'image' | 'sticker' | 'video'; content: string; id: string; videoNonce?: string };
         try {
           parsed = JSON.parse(payloadStr);
         } catch (e) {
           parsed = { kind: 'text', content: payloadStr, id: Date.now().toString() + Math.random() };
         }
 
+        let localContent = parsed.content;
+        if (parsed.kind === 'video' && parsed.videoNonce) {
+          try {
+            const resp = await fetch(parsed.content);
+            const arrayBuffer = await resp.arrayBuffer();
+            const cipherBytes = new Uint8Array(arrayBuffer);
+            const videoNonceBytes = util.decodeBase64(parsed.videoNonce);
+            const decryptedVideo = nacl.secretbox.open(cipherBytes, videoNonceBytes, messageKey);
+            if (decryptedVideo) {
+              const localPath = `${FileSystem.documentDirectory}video_${parsed.id}.mp4`;
+              await FileSystem.writeAsStringAsync(localPath, util.encodeBase64(decryptedVideo), { encoding: FileSystem.EncodingType.Base64 });
+              localContent = localPath;
+            } else {
+              console.log('No se pudo descifrar el video recibido');
+            }
+          } catch (e) {
+            console.log('Error descargando/descifrando video:', e);
+          }
+        }
+
         const newMsg: Message = {
           id: parsed.id,
-          text: parsed.content,
+          text: localContent,
           kind: parsed.kind || 'text',
           sentByMe: false,
           timestamp: Date.now(),
@@ -522,10 +634,9 @@ export default function ChatScreen() {
     }
 
     const payload = JSON.stringify({ kind: 'text', content: textToSend, id: msgId });
-    const messageKey = deriveKey(state.sendChain, 'MSG');
+    const { messageKey, counter } = takeSendKey(state);
     const nonce = nacl.randomBytes(24);
     const ciphertext = nacl.secretbox(util.decodeUTF8(payload), nonce, messageKey);
-    state.sendChain = deriveKey(state.sendChain, 'NEXT');
     persistRatchet(username, selectedUser.username, state);
 
     ws.current.send(JSON.stringify({
@@ -533,6 +644,7 @@ export default function ChatScreen() {
       to: selectedUser.username,
       ciphertext: util.encodeBase64(ciphertext),
       nonce: util.encodeBase64(nonce),
+      counter,
     }));
 
     const newMsg: Message = { id: msgId, text: textToSend, kind: 'text', sentByMe: true, timestamp: Date.now(), status: 'sent' };
@@ -548,10 +660,9 @@ export default function ChatScreen() {
     }
 
     const payload = JSON.stringify({ kind: msg.kind, content: msg.text, id: msg.id });
-    const messageKey = deriveKey(state.sendChain, 'MSG');
+    const { messageKey, counter } = takeSendKey(state);
     const nonce = nacl.randomBytes(24);
     const ciphertext = nacl.secretbox(util.decodeUTF8(payload), nonce, messageKey);
-    state.sendChain = deriveKey(state.sendChain, 'NEXT');
     persistRatchet(username, selectedUser.username, state);
 
     ws.current.send(JSON.stringify({
@@ -559,6 +670,7 @@ export default function ChatScreen() {
       to: selectedUser.username,
       ciphertext: util.encodeBase64(ciphertext),
       nonce: util.encodeBase64(nonce),
+      counter,
     }));
 
     setConversations((prev) => ({
@@ -583,10 +695,9 @@ export default function ChatScreen() {
     }
 
     const payload = JSON.stringify({ kind: 'sticker', content: emoji, id: msgId });
-    const messageKey = deriveKey(state.sendChain, 'MSG');
+    const { messageKey, counter } = takeSendKey(state);
     const nonce = nacl.randomBytes(24);
     const ciphertext = nacl.secretbox(util.decodeUTF8(payload), nonce, messageKey);
-    state.sendChain = deriveKey(state.sendChain, 'NEXT');
     persistRatchet(username, selectedUser.username, state);
 
     ws.current.send(JSON.stringify({
@@ -594,6 +705,7 @@ export default function ChatScreen() {
       to: selectedUser.username,
       ciphertext: util.encodeBase64(ciphertext),
       nonce: util.encodeBase64(nonce),
+      counter,
     }));
 
     const newMsg: Message = { id: msgId, text: emoji, kind: 'sticker', sentByMe: true, timestamp: Date.now(), status: 'sent' };
@@ -654,10 +766,9 @@ export default function ChatScreen() {
     }
 
     const payload = JSON.stringify({ kind: 'image', content: base64Image, id: msgId });
-    const messageKey = deriveKey(state.sendChain, 'MSG');
+    const { messageKey, counter } = takeSendKey(state);
     const nonce = nacl.randomBytes(24);
     const ciphertext = nacl.secretbox(util.decodeUTF8(payload), nonce, messageKey);
-    state.sendChain = deriveKey(state.sendChain, 'NEXT');
     persistRatchet(username, selectedUser.username, state);
 
     ws.current.send(JSON.stringify({
@@ -665,10 +776,80 @@ export default function ChatScreen() {
       to: selectedUser.username,
       ciphertext: util.encodeBase64(ciphertext),
       nonce: util.encodeBase64(nonce),
+      counter,
     }));
 
     const newMsg: Message = { id: msgId, text: base64Image, kind: 'image', sentByMe: true, timestamp: Date.now(), status: 'sent' };
     setConversations((prev) => ({ ...prev, [selectedUser.username]: [...(prev[selectedUser.username] || []), newMsg] }));
+  };
+
+  const sendVideo = async () => {
+    if (!selectedUser) return;
+    const state = ratchets.current[selectedUser.username];
+    if (!state) return;
+
+    const permission = await ImagePicker.requestMediaLibraryPermissionsAsync();
+    if (!permission.granted) {
+      console.log('Permiso de galeria no concedido');
+      return;
+    }
+
+    const result = await ImagePicker.launchImageLibraryAsync({
+      mediaTypes: ImagePicker.MediaTypeOptions.Videos,
+      videoMaxDuration: 30,
+    });
+
+    if (result.canceled || !result.assets || !result.assets[0].uri) return;
+
+    const localUri = result.assets[0].uri;
+    const msgId = Date.now().toString() + Math.random().toString(36).slice(2);
+
+    if (!ws.current || ws.current.readyState !== WebSocket.OPEN) {
+      console.log('No se pudo enviar: sin conexion en este momento');
+      const failedMsg: Message = { id: msgId, text: localUri, kind: 'video', sentByMe: true, timestamp: Date.now(), status: 'failed' };
+      setConversations((prev) => ({ ...prev, [selectedUser.username]: [...(prev[selectedUser.username] || []), failedMsg] }));
+      return;
+    }
+
+    try {
+      const { messageKey, counter } = takeSendKey(state);
+
+      const base64Video = await FileSystem.readAsStringAsync(localUri, { encoding: FileSystem.EncodingType.Base64 });
+      const videoBytes = util.decodeBase64(base64Video);
+      const videoNonce = nacl.randomBytes(24);
+      const videoCiphertext = nacl.secretbox(videoBytes, videoNonce, messageKey);
+
+      const storagePath = `${msgId}.bin`;
+      const { error: uploadError } = await supabase.storage.from('videos').upload(storagePath, videoCiphertext.buffer.slice(videoCiphertext.byteOffset, videoCiphertext.byteOffset + videoCiphertext.byteLength), {
+        contentType: 'application/octet-stream',
+      });
+      if (uploadError) {
+        console.log('Error subiendo el video:', uploadError.message);
+        const failedMsg: Message = { id: msgId, text: localUri, kind: 'video', sentByMe: true, timestamp: Date.now(), status: 'failed' };
+        setConversations((prev) => ({ ...prev, [selectedUser.username]: [...(prev[selectedUser.username] || []), failedMsg] }));
+        return;
+      }
+
+      const { data: urlData } = supabase.storage.from('videos').getPublicUrl(storagePath);
+
+      const payload = JSON.stringify({ kind: 'video', content: urlData.publicUrl, videoNonce: util.encodeBase64(videoNonce), id: msgId });
+      const nonce = nacl.randomBytes(24);
+      const ciphertext = nacl.secretbox(util.decodeUTF8(payload), nonce, messageKey);
+      persistRatchet(username, selectedUser.username, state);
+
+      ws.current.send(JSON.stringify({
+        type: 'direct-message',
+        to: selectedUser.username,
+        ciphertext: util.encodeBase64(ciphertext),
+        nonce: util.encodeBase64(nonce),
+        counter,
+      }));
+
+      const newMsg: Message = { id: msgId, text: localUri, kind: 'video', sentByMe: true, timestamp: Date.now(), status: 'sent' };
+      setConversations((prev) => ({ ...prev, [selectedUser.username]: [...(prev[selectedUser.username] || []), newMsg] }));
+    } catch (e) {
+      console.log('Error mandando el video:', e);
+    }
   };
 
   if (!authenticated) {
@@ -874,10 +1055,12 @@ export default function ChatScreen() {
                   <View style={[
                     styles.bubble,
                     item.sentByMe ? styles.myBubble : styles.theirBubble,
-                    item.kind === 'image' && styles.imageBubble,
+                    (item.kind === 'image' || item.kind === 'video') && styles.imageBubble,
                   ]}>
                     {item.kind === 'image' ? (
                       <Image source={{ uri: `data:image/jpeg;base64,${item.text}` }} style={styles.messageImage} resizeMode="cover" />
+                    ) : item.kind === 'video' ? (
+                      <VideoBubble uri={item.text} style={styles.messageImage} />
                     ) : (
                       <LinkableText
                         text={item.text}
@@ -925,6 +1108,9 @@ export default function ChatScreen() {
             </TouchableOpacity>
             <TouchableOpacity style={styles.attachButton} onPress={sendImage} activeOpacity={0.7}>
               <Text style={styles.attachButtonIcon}>📎</Text>
+            </TouchableOpacity>
+            <TouchableOpacity style={styles.attachButton} onPress={sendVideo} activeOpacity={0.7}>
+              <Text style={styles.attachButtonIcon}>🎥</Text>
             </TouchableOpacity>
             <TextInput
               style={styles.messageInput}
