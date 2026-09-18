@@ -78,7 +78,7 @@ function formatTime(ts: number) {
 }
 
 type OnlineUser = { username: string; publicKey: string; online: boolean; profilePicture?: string };
-type Message = { id: string; text: string; kind: 'text' | 'image' | 'sticker' | 'video' | 'voice'; sentByMe: boolean; timestamp: number; status?: 'sent' | 'read' | 'failed'; duration?: number };
+type Message = { id: string; text: string; kind: 'text' | 'image' | 'sticker' | 'video' | 'voice'; sentByMe: boolean; timestamp: number; status?: 'sent' | 'read' | 'failed'; duration?: number; selfDestruct?: boolean };
 const STICKERS = ['🦅', '🎖️', '🫡', '💪', '🔥', '❤️', '😂', '👍', '💥', '🎯', '☕', '🌙'];
 type RatchetState = { sendChain: Uint8Array; recvChain: Uint8Array; sendCounter: number; recvCounter: number; skippedKeys: Record<number, string> };
 
@@ -308,6 +308,7 @@ export default function ChatScreen() {
   const [conversations, setConversations] = useState<Record<string, Message[]>>({});
   const [inputText, setInputText] = useState('');
   const [showStickers, setShowStickers] = useState(false);
+  const [selfDestructMode, setSelfDestructMode] = useState<Record<string, boolean>>({});
   const [myProfilePicture, setMyProfilePicture] = useState<string | null>(null);
   const [isRecording, setIsRecording] = useState(false);
   const [recordingSeconds, setRecordingSeconds] = useState(0);
@@ -481,7 +482,7 @@ export default function ChatScreen() {
         persistRatchet(usernameRef.current, sender, state);
 
         const payloadStr = util.encodeUTF8(decrypted);
-        let parsed: { kind: 'text' | 'image' | 'sticker' | 'video' | 'voice'; content: string; id: string; videoNonce?: string; audioNonce?: string; duration?: number };
+        let parsed: { kind: 'text' | 'image' | 'sticker' | 'video' | 'voice'; content: string; id: string; videoNonce?: string; audioNonce?: string; duration?: number; selfDestruct?: boolean };
         try {
           parsed = JSON.parse(payloadStr);
         } catch (e) {
@@ -533,8 +534,12 @@ export default function ChatScreen() {
           sentByMe: false,
           timestamp: Date.now(),
           duration: parsed.duration,
+          selfDestruct: parsed.selfDestruct,
         };
         setConversations((prev) => ({ ...prev, [sender]: [...(prev[sender] || []), newMsg] }));
+        if (parsed.selfDestruct) {
+          scheduleSelfDestruct(sender, parsed.id);
+        }
 
         ws.current?.send(JSON.stringify({ type: 'read-receipt', to: sender, messageId: parsed.id }));
       })();
@@ -650,6 +655,23 @@ export default function ChatScreen() {
     ws.current?.close();
   };
 
+  const SELF_DESTRUCT_SECONDS = 10;
+
+  const scheduleSelfDestruct = (otherUsername: string, messageId: string) => {
+    setTimeout(() => {
+      setConversations((prev) => {
+        const convo = prev[otherUsername];
+        if (!convo) return prev;
+        return { ...prev, [otherUsername]: convo.filter((m) => m.id !== messageId) };
+      });
+    }, SELF_DESTRUCT_SECONDS * 1000);
+  };
+
+  const toggleSelfDestruct = () => {
+    if (!selectedUser) return;
+    setSelfDestructMode((prev) => ({ ...prev, [selectedUser.username]: !prev[selectedUser.username] }));
+  };
+
   const resetEncryption = async () => {
     if (!selectedUser) return;
     const storageKey = `ratchet_${username}_${selectedUser.username}`;
@@ -684,7 +706,8 @@ export default function ChatScreen() {
       return;
     }
 
-    const payload = JSON.stringify({ kind: 'text', content: textToSend, id: msgId });
+    const isSelfDestruct = !!selfDestructMode[selectedUser.username];
+    const payload = JSON.stringify({ kind: 'text', content: textToSend, id: msgId, selfDestruct: isSelfDestruct });
     const { messageKey, counter } = takeSendKey(state);
     const nonce = nacl.randomBytes(24);
     const ciphertext = nacl.secretbox(util.decodeUTF8(payload), nonce, messageKey);
@@ -698,8 +721,11 @@ export default function ChatScreen() {
       counter,
     }));
 
-    const newMsg: Message = { id: msgId, text: textToSend, kind: 'text', sentByMe: true, timestamp: Date.now(), status: 'sent' };
+    const newMsg: Message = { id: msgId, text: textToSend, kind: 'text', sentByMe: true, timestamp: Date.now(), status: 'sent', selfDestruct: isSelfDestruct };
     setConversations((prev) => ({ ...prev, [selectedUser.username]: [...(prev[selectedUser.username] || []), newMsg] }));
+    if (isSelfDestruct) {
+      scheduleSelfDestruct(selectedUser.username, msgId);
+    }
   };
 
   const retrySend = (msg: Message) => {
@@ -1193,6 +1219,13 @@ export default function ChatScreen() {
                 {selectedUser.online ? 'EN LÍNEA' : 'SIN CONEXIÓN'} · CANAL CIFRADO
               </Text>
             </View>
+            <TouchableOpacity
+              onPress={toggleSelfDestruct}
+              style={[styles.logoutButton, { marginRight: 8 }, selfDestructMode[selectedUser.username] && styles.selfDestructActive]}
+              activeOpacity={0.7}
+            >
+              <Text style={styles.logoutButtonText}>⏱ {selfDestructMode[selectedUser.username] ? 'ON' : 'OFF'}</Text>
+            </TouchableOpacity>
             <TouchableOpacity onPress={resetEncryption} style={styles.logoutButton} activeOpacity={0.7}>
               <Text style={styles.logoutButtonText}>REINICIAR</Text>
             </TouchableOpacity>
@@ -1229,6 +1262,7 @@ export default function ChatScreen() {
                   </View>
                 )}
                 <View style={{ flexDirection: 'row', alignItems: 'center' }}>
+                  {item.selfDestruct && <Text style={styles.timestamp}>⏱ </Text>}
                   <Text style={styles.timestamp}>{formatTime(item.timestamp)}</Text>
                   {item.sentByMe && item.status === 'failed' && (
                     <TouchableOpacity onPress={() => retrySend(item)} activeOpacity={0.7}>
@@ -1371,6 +1405,7 @@ function createStyles(COLORS: typeof LIGHT_COLORS) {
       paddingHorizontal: 10, paddingVertical: 6,
     },
     logoutButtonText: { fontSize: 10, fontWeight: '800', color: COLORS.danger, letterSpacing: 1 },
+    selfDestructActive: { backgroundColor: COLORS.accent, borderColor: COLORS.accent },
     sectionDivider: { paddingHorizontal: 16, paddingTop: 14, paddingBottom: 8 },
     sectionTitle: { fontSize: 10, fontWeight: '800', color: COLORS.textMuted, letterSpacing: 1.5 },
     userRow: {
