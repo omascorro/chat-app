@@ -80,7 +80,7 @@ function formatTime(ts: number) {
 type OnlineUser = { username: string; publicKey: string; online: boolean; profilePicture?: string };
 type Message = { id: string; text: string; kind: 'text' | 'image' | 'sticker' | 'video' | 'voice'; sentByMe: boolean; timestamp: number; status?: 'sent' | 'read' | 'failed'; duration?: number; selfDestruct?: boolean };
 const STICKERS = ['🦅', '🎖️', '🫡', '💪', '🔥', '❤️', '😂', '👍', '💥', '🎯', '☕', '🌙'];
-type RatchetState = { sendChain: Uint8Array; recvChain: Uint8Array; sendCounter: number; recvCounter: number; skippedKeys: Record<number, string> };
+type RatchetState = { sendChain: Uint8Array; recvChain: Uint8Array; sendCounter: number; recvCounter: number; skippedKeys: Record<number, string>; peerPublicKey: string };
 
 function concatBytes(...arrays: Uint8Array[]): Uint8Array {
   const total = arrays.reduce((sum, a) => sum + a.length, 0);
@@ -172,6 +172,7 @@ function initRatchet(myUsername: string, theirUsername: string, theirPublicKeyB6
     sendCounter: 0,
     recvCounter: 0,
     skippedKeys: {},
+    peerPublicKey: theirPublicKeyB64,
   };
 }
 
@@ -184,6 +185,7 @@ async function persistRatchet(myUsername: string, theirUsername: string, state: 
       sendCounter: state.sendCounter,
       recvCounter: state.recvCounter,
       skippedKeys: state.skippedKeys,
+      peerPublicKey: state.peerPublicKey,
     }));
   } catch (e) {
     console.log('No se pudo guardar el estado del ratchet:', e);
@@ -195,13 +197,17 @@ async function loadOrCreateRatchet(myUsername: string, theirUsername: string, th
   const stored = await SecureStore.getItemAsync(storageKey);
   if (stored) {
     const parsed = JSON.parse(stored);
-    return {
-      sendChain: util.decodeBase64(parsed.sendChain),
-      recvChain: util.decodeBase64(parsed.recvChain),
-      sendCounter: typeof parsed.sendCounter === 'number' ? parsed.sendCounter : 0,
-      recvCounter: typeof parsed.recvCounter === 'number' ? parsed.recvCounter : 0,
-      skippedKeys: parsed.skippedKeys || {},
-    };
+    if (!parsed.peerPublicKey || parsed.peerPublicKey === theirPublicKeyB64) {
+      return {
+        sendChain: util.decodeBase64(parsed.sendChain),
+        recvChain: util.decodeBase64(parsed.recvChain),
+        sendCounter: typeof parsed.sendCounter === 'number' ? parsed.sendCounter : 0,
+        recvCounter: typeof parsed.recvCounter === 'number' ? parsed.recvCounter : 0,
+        skippedKeys: parsed.skippedKeys || {},
+        peerPublicKey: parsed.peerPublicKey || theirPublicKeyB64,
+      };
+    }
+    console.log('🔄 La llave publica de', theirUsername, 'cambio desde la ultima vez, generando un cifrado nuevo automaticamente');
   }
   const fresh = initRatchet(myUsername, theirUsername, theirPublicKeyB64, mySecretKey);
   await persistRatchet(myUsername, theirUsername, fresh);
