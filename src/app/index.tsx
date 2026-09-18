@@ -679,14 +679,28 @@ export default function ChatScreen() {
   };
 
   const resetEncryption = async () => {
-    if (!selectedUser) return;
-    const storageKey = `ratchet_${username}_${selectedUser.username}`;
-    await SecureStore.deleteItemAsync(storageKey);
-    delete ratchets.current[selectedUser.username];
-    if (myKeys.current) {
-      ratchets.current[selectedUser.username] = await loadOrCreateRatchet(username, selectedUser.username, selectedUser.publicKey, myKeys.current.secretKey);
+    console.log('Boton REINICIAR presionado');
+    if (!selectedUser) {
+      console.log('REINICIAR: no hay selectedUser, cancelando');
+      return;
     }
-    console.log('🔄 Cifrado reiniciado para', selectedUser.username);
+    try {
+      const storageKey = `ratchet_${username}_${selectedUser.username}`;
+      console.log('Borrando ratchet guardado:', storageKey);
+      await SecureStore.deleteItemAsync(storageKey);
+      console.log('Ratchet guardado borrado');
+      delete ratchets.current[selectedUser.username];
+      if (myKeys.current) {
+        console.log('Generando ratchet nuevo...');
+        ratchets.current[selectedUser.username] = await loadOrCreateRatchet(username, selectedUser.username, selectedUser.publicKey, myKeys.current.secretKey);
+        console.log('Ratchet nuevo generado');
+      } else {
+        console.log('REINICIAR: myKeys.current es null, no se genero ratchet nuevo');
+      }
+      console.log('🔄 Cifrado reiniciado para', selectedUser.username);
+    } catch (e) {
+      console.log('Error en REINICIAR:', e);
+    }
   };
 
   const openConversation = async (user: OnlineUser) => {
@@ -867,6 +881,7 @@ export default function ChatScreen() {
   };
 
   const sendVideo = async () => {
+    console.log('Boton de video presionado');
     if (!selectedUser) return;
     const state = ratchets.current[selectedUser.username];
     if (!state) return;
@@ -882,9 +897,14 @@ export default function ChatScreen() {
       videoMaxDuration: 30,
     });
 
-    if (result.canceled || !result.assets || !result.assets[0].uri) return;
+    console.log('Resultado del selector de video: canceled=', result.canceled, 'assets=', result.assets ? result.assets.length : 0);
+    if (result.canceled || !result.assets || !result.assets[0].uri) {
+      console.log('No se selecciono ningun video valido, cancelando envio');
+      return;
+    }
 
     const localUri = result.assets[0].uri;
+    console.log('Video local seleccionado, uri:', localUri);
     const msgId = Date.now().toString() + Math.random().toString(36).slice(2);
 
     if (!ws.current || ws.current.readyState !== WebSocket.OPEN) {
@@ -896,16 +916,21 @@ export default function ChatScreen() {
 
     try {
       const { messageKey, counter } = takeSendKey(state);
+      console.log('Llave de cifrado obtenida, contador:', counter);
 
       const base64Video = await FileSystem.readAsStringAsync(localUri, { encoding: FileSystem.EncodingType.Base64 });
+      console.log('Video leido y convertido a base64, tamano:', base64Video.length);
       const videoBytes = util.decodeBase64(base64Video);
       const videoNonce = nacl.randomBytes(24);
       const videoCiphertext = nacl.secretbox(videoBytes, videoNonce, messageKey);
+      console.log('Video cifrado localmente, tamano:', videoCiphertext.length);
 
       const storagePath = `${msgId}.bin`;
+      console.log('Subiendo video a Supabase Storage...');
       const { error: uploadError } = await supabase.storage.from('videos').upload(storagePath, videoCiphertext.buffer.slice(videoCiphertext.byteOffset, videoCiphertext.byteOffset + videoCiphertext.byteLength), {
         contentType: 'application/octet-stream',
       });
+      console.log('Respuesta de Supabase Storage, error:', uploadError ? uploadError.message : 'ninguno');
       if (uploadError) {
         console.log('Error subiendo el video:', uploadError.message);
         const failedMsg: Message = { id: msgId, text: localUri, kind: 'video', sentByMe: true, timestamp: Date.now(), status: 'failed' };
@@ -914,12 +939,14 @@ export default function ChatScreen() {
       }
 
       const { data: urlData } = supabase.storage.from('videos').getPublicUrl(storagePath);
+      console.log('URL publica del video:', urlData.publicUrl);
 
       const payload = JSON.stringify({ kind: 'video', content: urlData.publicUrl, videoNonce: util.encodeBase64(videoNonce), id: msgId });
       const nonce = nacl.randomBytes(24);
       const ciphertext = nacl.secretbox(util.decodeUTF8(payload), nonce, messageKey);
       persistRatchet(username, selectedUser.username, state);
 
+      console.log('Enviando mensaje cifrado por WebSocket, readyState:', ws.current.readyState);
       ws.current.send(JSON.stringify({
         type: 'direct-message',
         to: selectedUser.username,
@@ -927,9 +954,11 @@ export default function ChatScreen() {
         nonce: util.encodeBase64(nonce),
         counter,
       }));
+      console.log('Mensaje de video enviado por WebSocket sin errores');
 
       const newMsg: Message = { id: msgId, text: localUri, kind: 'video', sentByMe: true, timestamp: Date.now(), status: 'sent' };
       setConversations((prev) => ({ ...prev, [selectedUser.username]: [...(prev[selectedUser.username] || []), newMsg] }));
+      console.log('Video enviado completamente con exito');
     } catch (e) {
       console.log('Error mandando el video:', e);
     }
