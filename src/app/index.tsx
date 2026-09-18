@@ -6,6 +6,7 @@ import * as Notifications from 'expo-notifications';
 import * as SecureStore from 'expo-secure-store';
 import { StatusBar } from 'expo-status-bar';
 import { useVideoPlayer, VideoView } from 'expo-video';
+import { AudioModule, RecordingPresets, setAudioModeAsync, useAudioPlayer, useAudioPlayerStatus, useAudioRecorder } from 'expo-audio';
 import { useEffect, useMemo, useRef, useState } from 'react';
 import {
   FlatList,
@@ -77,7 +78,7 @@ function formatTime(ts: number) {
 }
 
 type OnlineUser = { username: string; publicKey: string; online: boolean; profilePicture?: string };
-type Message = { id: string; text: string; kind: 'text' | 'image' | 'sticker' | 'video'; sentByMe: boolean; timestamp: number; status?: 'sent' | 'read' | 'failed' };
+type Message = { id: string; text: string; kind: 'text' | 'image' | 'sticker' | 'video' | 'voice'; sentByMe: boolean; timestamp: number; status?: 'sent' | 'read' | 'failed'; duration?: number };
 const STICKERS = ['🦅', '🎖️', '🫡', '💪', '🔥', '❤️', '😂', '👍', '💥', '🎯', '☕', '🌙'];
 type RatchetState = { sendChain: Uint8Array; recvChain: Uint8Array; sendCounter: number; recvCounter: number; skippedKeys: Record<number, string> };
 
@@ -259,6 +260,33 @@ function VideoBubble({ uri, style }: { uri: string; style: any }) {
   );
 }
 
+function VoiceBubble({ uri, duration, textColor }: { uri: string; duration?: number; textColor: string }) {
+  const player = useAudioPlayer(uri);
+  const status = useAudioPlayerStatus(player);
+
+  const togglePlay = () => {
+    if (status.playing) {
+      player.pause();
+      return;
+    }
+    if (status.didJustFinish || (status.duration > 0 && status.currentTime >= status.duration)) {
+      player.seekTo(0);
+    }
+    player.play();
+  };
+
+  const mins = Math.floor((duration || 0) / 60);
+  const secs = (duration || 0) % 60;
+  const label = mins + ':' + secs.toString().padStart(2, '0');
+
+  return (
+    <TouchableOpacity onPress={togglePlay} style={{ flexDirection: 'row', alignItems: 'center', minWidth: 130 }} activeOpacity={0.7}>
+      <Text style={{ fontSize: 20, marginRight: 8 }}>{status.playing ? '⏸' : '▶️'}</Text>
+      <Text style={{ color: textColor, fontSize: 14, fontWeight: '700' }}>{label}</Text>
+    </TouchableOpacity>
+  );
+}
+
 export default function ChatScreen() {
   const scheme = useColorScheme();
   const isDark = scheme === 'dark';
@@ -281,6 +309,9 @@ export default function ChatScreen() {
   const [inputText, setInputText] = useState('');
   const [showStickers, setShowStickers] = useState(false);
   const [myProfilePicture, setMyProfilePicture] = useState<string | null>(null);
+  const [isRecording, setIsRecording] = useState(false);
+  const [recordingSeconds, setRecordingSeconds] = useState(0);
+  const audioRecorder = useAudioRecorder(RecordingPresets.HIGH_QUALITY);
 
   const ws = useRef<WebSocket | null>(null);
   const myKeys = useRef<nacl.BoxKeyPair | null>(null);
@@ -291,6 +322,7 @@ export default function ChatScreen() {
   const shouldReconnect = useRef(true);
   const hasLoadedHistory = useRef(false);
   const flatListRef = useRef<FlatList>(null);
+  const recordingTimerRef = useRef<ReturnType<typeof setInterval> | null>(null);
 
   useEffect(() => { onlineUsersRef.current = onlineUsers; }, [onlineUsers]);
   useEffect(() => { usernameRef.current = username; }, [username]);
@@ -449,7 +481,7 @@ export default function ChatScreen() {
         persistRatchet(usernameRef.current, sender, state);
 
         const payloadStr = util.encodeUTF8(decrypted);
-        let parsed: { kind: 'text' | 'image' | 'sticker' | 'video'; content: string; id: string; videoNonce?: string };
+        let parsed: { kind: 'text' | 'image' | 'sticker' | 'video' | 'voice'; content: string; id: string; videoNonce?: string; audioNonce?: string; duration?: number };
         try {
           parsed = JSON.parse(payloadStr);
         } catch (e) {
@@ -475,6 +507,24 @@ export default function ChatScreen() {
             console.log('Error descargando/descifrando video:', e);
           }
         }
+        if (parsed.kind === 'voice' && parsed.audioNonce) {
+          try {
+            const resp = await fetch(parsed.content);
+            const arrayBuffer = await resp.arrayBuffer();
+            const cipherBytes = new Uint8Array(arrayBuffer);
+            const audioNonceBytes = util.decodeBase64(parsed.audioNonce);
+            const decryptedAudio = nacl.secretbox.open(cipherBytes, audioNonceBytes, messageKey);
+            if (decryptedAudio) {
+              const localPath = `${FileSystem.documentDirectory}voice_${parsed.id}.m4a`;
+              await FileSystem.writeAsStringAsync(localPath, util.encodeBase64(decryptedAudio), { encoding: FileSystem.EncodingType.Base64 });
+              localContent = localPath;
+            } else {
+              console.log('No se pudo descifrar la nota de voz recibida');
+            }
+          } catch (e) {
+            console.log('Error descargando/descifrando nota de voz:', e);
+          }
+        }
 
         const newMsg: Message = {
           id: parsed.id,
@@ -482,6 +532,7 @@ export default function ChatScreen() {
           kind: parsed.kind || 'text',
           sentByMe: false,
           timestamp: Date.now(),
+          duration: parsed.duration,
         };
         setConversations((prev) => ({ ...prev, [sender]: [...(prev[sender] || []), newMsg] }));
 
@@ -852,6 +903,111 @@ export default function ChatScreen() {
     }
   };
 
+  const startRecording = async () => {
+    try {
+      const permission = await AudioModule.requestRecordingPermissionsAsync();
+      if (!permission.granted) {
+        console.log('Permiso de microfono no concedido');
+        return;
+      }
+      await setAudioModeAsync({ allowsRecording: true, playsInSilentMode: true });
+      await audioRecorder.prepareToRecordAsync();
+      audioRecorder.record();
+      setIsRecording(true);
+      setRecordingSeconds(0);
+      recordingTimerRef.current = setInterval(() => {
+        setRecordingSeconds((s) => s + 1);
+      }, 1000);
+    } catch (e) {
+      console.log('Error iniciando la grabacion:', e);
+    }
+  };
+
+  const stopRecordingAndSend = async () => {
+    if (recordingTimerRef.current) {
+      clearInterval(recordingTimerRef.current);
+      recordingTimerRef.current = null;
+    }
+    const durationSeconds = recordingSeconds;
+    setIsRecording(false);
+    setRecordingSeconds(0);
+
+    if (durationSeconds < 1 || !selectedUser || !ratchets.current[selectedUser.username]) {
+      try {
+        await audioRecorder.stop();
+      } catch (e) {}
+      return;
+    }
+
+    const state = ratchets.current[selectedUser.username];
+
+    try {
+      await audioRecorder.stop();
+      const localUri = audioRecorder.uri;
+      console.log('Grabacion detenida, uri local:', localUri);
+      if (!localUri) {
+        console.log('No se genero un archivo de audio local, cancelando envio');
+        return;
+      }
+
+      const msgId = Date.now().toString() + Math.random().toString(36).slice(2);
+
+      if (!ws.current || ws.current.readyState !== WebSocket.OPEN) {
+        console.log('No se pudo enviar: sin conexion en este momento');
+        const failedMsg: Message = { id: msgId, text: localUri, kind: 'voice', sentByMe: true, timestamp: Date.now(), status: 'failed', duration: durationSeconds };
+        setConversations((prev) => ({ ...prev, [selectedUser.username]: [...(prev[selectedUser.username] || []), failedMsg] }));
+        return;
+      }
+
+      const { messageKey, counter } = takeSendKey(state);
+
+      const base64Audio = await FileSystem.readAsStringAsync(localUri, { encoding: FileSystem.EncodingType.Base64 });
+      const audioBytes = util.decodeBase64(base64Audio);
+      const audioNonce = nacl.randomBytes(24);
+      const audioCiphertext = nacl.secretbox(audioBytes, audioNonce, messageKey);
+
+      const storagePath = `${msgId}.bin`;
+      const { error: uploadError } = await supabase.storage.from('voices').upload(storagePath, audioCiphertext.buffer.slice(audioCiphertext.byteOffset, audioCiphertext.byteOffset + audioCiphertext.byteLength), {
+        contentType: 'application/octet-stream',
+      });
+      if (uploadError) {
+        console.log('Error subiendo la nota de voz:', uploadError.message);
+        const failedMsg: Message = { id: msgId, text: localUri, kind: 'voice', sentByMe: true, timestamp: Date.now(), status: 'failed', duration: durationSeconds };
+        setConversations((prev) => ({ ...prev, [selectedUser.username]: [...(prev[selectedUser.username] || []), failedMsg] }));
+        return;
+      }
+
+      const { data: urlData } = supabase.storage.from('voices').getPublicUrl(storagePath);
+
+      const payload = JSON.stringify({ kind: 'voice', content: urlData.publicUrl, audioNonce: util.encodeBase64(audioNonce), duration: durationSeconds, id: msgId });
+      const nonce = nacl.randomBytes(24);
+      const ciphertext = nacl.secretbox(util.decodeUTF8(payload), nonce, messageKey);
+      persistRatchet(username, selectedUser.username, state);
+
+      ws.current.send(JSON.stringify({
+        type: 'direct-message',
+        to: selectedUser.username,
+        ciphertext: util.encodeBase64(ciphertext),
+        nonce: util.encodeBase64(nonce),
+        counter,
+      }));
+
+      const newMsg: Message = { id: msgId, text: localUri, kind: 'voice', sentByMe: true, timestamp: Date.now(), status: 'sent', duration: durationSeconds };
+      setConversations((prev) => ({ ...prev, [selectedUser.username]: [...(prev[selectedUser.username] || []), newMsg] }));
+      console.log('Nota de voz enviada correctamente');
+    } catch (e) {
+      console.log('Error mandando la nota de voz:', e);
+    }
+  };
+
+  const handleMicPress = () => {
+    if (isRecording) {
+      stopRecordingAndSend();
+    } else {
+      startRecording();
+    }
+  };
+
   if (!authenticated) {
     if (recoveryCodeToShow) {
       return (
@@ -1061,6 +1217,8 @@ export default function ChatScreen() {
                       <Image source={{ uri: `data:image/jpeg;base64,${item.text}` }} style={styles.messageImage} resizeMode="cover" />
                     ) : item.kind === 'video' ? (
                       <VideoBubble uri={item.text} style={styles.messageImage} />
+                    ) : item.kind === 'voice' ? (
+                      <VoiceBubble uri={item.text} duration={item.duration} textColor={item.sentByMe ? styles.myText.color : styles.theirText.color} />
                     ) : (
                       <LinkableText
                         text={item.text}
@@ -1112,14 +1270,28 @@ export default function ChatScreen() {
             <TouchableOpacity style={styles.attachButton} onPress={sendVideo} activeOpacity={0.7}>
               <Text style={styles.attachButtonIcon}>🎥</Text>
             </TouchableOpacity>
-            <TextInput
-              style={styles.messageInput}
-              placeholder="redactar mensaje..."
-              placeholderTextColor={COLORS.textMuted}
-              value={inputText}
-              onChangeText={setInputText}
-              multiline
-            />
+            <TouchableOpacity
+              style={[styles.attachButton, isRecording && styles.attachButtonRecording]}
+              onPress={handleMicPress}
+              activeOpacity={0.7}
+            >
+              <Text style={styles.attachButtonIcon}>{isRecording ? '⏹' : '🎤'}</Text>
+            </TouchableOpacity>
+            {isRecording ? (
+              <View style={styles.recordingIndicator}>
+                <View style={styles.recordingDot} />
+                <Text style={styles.recordingText}>Grabando... {recordingSeconds}s · toca otra vez para enviar</Text>
+              </View>
+            ) : (
+              <TextInput
+                style={styles.messageInput}
+                placeholder="redactar mensaje..."
+                placeholderTextColor={COLORS.textMuted}
+                value={inputText}
+                onChangeText={setInputText}
+                multiline
+              />
+            )}
             <TouchableOpacity style={styles.sendButton} onPress={sendMessage} activeOpacity={0.8}>
               <Text style={styles.sendButtonIcon}>➤</Text>
             </TouchableOpacity>
@@ -1264,6 +1436,15 @@ function createStyles(COLORS: typeof LIGHT_COLORS) {
       alignItems: 'center', justifyContent: 'center', marginRight: 8,
     },
     attachButtonIcon: { fontSize: 18 },
+    attachButtonRecording: { backgroundColor: COLORS.danger, borderColor: COLORS.danger },
+    recordingIndicator: {
+      flex: 1, flexDirection: 'row', alignItems: 'center',
+      backgroundColor: COLORS.bg, borderRadius: 2,
+      paddingHorizontal: 14, paddingVertical: 10, marginRight: 8,
+      borderWidth: 1, borderColor: COLORS.danger,
+    },
+    recordingDot: { width: 8, height: 8, borderRadius: 4, backgroundColor: COLORS.danger, marginRight: 8 },
+    recordingText: { color: COLORS.text, fontSize: 12, fontWeight: '600' },
     stickerText: { fontSize: 72 },
     stickerPanel: {
       backgroundColor: COLORS.card, borderTopWidth: 2, borderTopColor: COLORS.primary,

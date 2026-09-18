@@ -45,3 +45,5 @@ example
 
 *firebase-adminsdk*.json
 .env
+credentials.json
+credentials/

@@ -1,4 +1,4 @@
-{
+﻿{
   "expo": {
     "name": "Aeterna",
     "slug": "chat-app",
@@ -8,7 +8,7 @@
     "scheme": "chatapp",
     "userInterfaceStyle": "automatic",
     "ios": {
-      "icon": "./assets/expo.icon",
+      "icon": "./assets/images/icon.png",
       "bundleIdentifier": "com.mascorro55.chatapp",
       "infoPlist": {
         "ITSAppUsesNonExemptEncryption": false
@@ -16,7 +16,7 @@
     },
     "android": {
       "adaptiveIcon": {
-        "backgroundColor": "#E6F4FE",
+        "backgroundColor": "#4B5320",
         "foregroundImage": "./assets/images/android-icon-foreground.png",
         "backgroundImage": "./assets/images/android-icon-background.png",
         "monochromeImage": "./assets/images/android-icon-monochrome.png"
@@ -34,13 +34,20 @@
       [
         "expo-splash-screen",
         {
-          "backgroundColor": "#208AEF",
+          "backgroundColor": "#4B5320",
           "image": "./assets/images/splash-icon.png",
           "imageWidth": 76
         }
       ],
       "expo-secure-store",
-      "expo-notifications"
+      "expo-notifications",
+      "expo-video",
+      [
+        "expo-audio",
+        {
+          "microphonePermission": "Permite grabar notas de voz para enviarlas a tus contactos."
+        }
+      ]
     ],
     "experiments": {
       "typedRoutes": true,
