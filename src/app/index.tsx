@@ -346,7 +346,9 @@ export default function ChatScreen() {
 
   useEffect(() => {
     if (!authenticated || username === '') return;
-    AsyncStorage.setItem(`messages_${username}`, JSON.stringify(conversations));
+    AsyncStorage.setItem(`messages_${username}`, JSON.stringify(conversations)).catch((e) => {
+      console.log('Error guardando mensajes localmente:', e);
+    });
   }, [conversations, authenticated, username]);
 
   const registerForPushNotifications = async () => {
@@ -431,8 +433,12 @@ export default function ChatScreen() {
 
         if (!hasLoadedHistory.current) {
           hasLoadedHistory.current = true;
-          AsyncStorage.getItem(`messages_${pendingAuth.current.username}`).then((stored) => {
+          const historyUsername = pendingAuth.current.username;
+          AsyncStorage.getItem(`messages_${historyUsername}`).then((stored) => {
             if (stored) setConversations(JSON.parse(stored));
+          }).catch((e) => {
+            console.log('No se pudo cargar el historial local guardado (posiblemente corrupto), se reinicia:', e);
+            AsyncStorage.removeItem(`messages_${historyUsername}`).catch(() => {});
           });
         }
         registerForPushNotifications();
@@ -488,7 +494,7 @@ export default function ChatScreen() {
         persistRatchet(usernameRef.current, sender, state);
 
         const payloadStr = util.encodeUTF8(decrypted);
-        let parsed: { kind: 'text' | 'image' | 'sticker' | 'video' | 'voice'; content: string; id: string; videoNonce?: string; audioNonce?: string; duration?: number; selfDestruct?: boolean };
+        let parsed: { kind: 'text' | 'image' | 'sticker' | 'video' | 'voice'; content: string; id: string; videoNonce?: string; audioNonce?: string; imageNonce?: string; duration?: number; selfDestruct?: boolean };
         try {
           parsed = JSON.parse(payloadStr);
         } catch (e) {
@@ -512,6 +518,27 @@ export default function ChatScreen() {
             }
           } catch (e) {
             console.log('Error descargando/descifrando video:', e);
+          }
+        }
+        if (parsed.kind === 'image' && parsed.imageNonce) {
+          console.log('Imagen recibida, descargando de:', parsed.content);
+          try {
+            const resp = await fetch(parsed.content);
+            const arrayBuffer = await resp.arrayBuffer();
+            console.log('Imagen descargada, tamano cifrado:', arrayBuffer.byteLength);
+            const cipherBytes = new Uint8Array(arrayBuffer);
+            const imageNonceBytes = util.decodeBase64(parsed.imageNonce);
+            const decryptedImage = nacl.secretbox.open(cipherBytes, imageNonceBytes, messageKey);
+            if (decryptedImage) {
+              const localPath = `${FileSystem.documentDirectory}image_${parsed.id}.jpg`;
+              await FileSystem.writeAsStringAsync(localPath, util.encodeBase64(decryptedImage), { encoding: FileSystem.EncodingType.Base64 });
+              localContent = localPath;
+              console.log('Imagen descifrada y guardada localmente en:', localPath);
+            } else {
+              console.log('No se pudo descifrar la imagen recibida');
+            }
+          } catch (e) {
+            console.log('Error descargando/descifrando imagen:', e);
           }
         }
         if (parsed.kind === 'voice' && parsed.audioNonce) {
@@ -748,11 +775,56 @@ export default function ChatScreen() {
     }
   };
 
-  const retrySend = (msg: Message) => {
+  const retrySend = async (msg: Message) => {
     if (!selectedUser) return;
     const state = ratchets.current[selectedUser.username];
     if (!state || !ws.current || ws.current.readyState !== WebSocket.OPEN) {
       console.log('⚠️ Sigue sin conexión, no se pudo reintentar');
+      return;
+    }
+
+    if (msg.kind === 'image' || msg.kind === 'video' || msg.kind === 'voice') {
+      try {
+        const { messageKey, counter } = takeSendKey(state);
+        const localUri = msg.text;
+        const base64Data = await FileSystem.readAsStringAsync(localUri, { encoding: FileSystem.EncodingType.Base64 });
+        const dataBytes = util.decodeBase64(base64Data);
+        const dataNonce = nacl.randomBytes(24);
+        const dataCiphertext = nacl.secretbox(dataBytes, dataNonce, messageKey);
+
+        const bucket = msg.kind === 'voice' ? 'voices' : 'videos';
+        const nonceField = msg.kind === 'voice' ? 'audioNonce' : msg.kind === 'video' ? 'videoNonce' : 'imageNonce';
+        const storagePath = `${msg.id}.bin`;
+        const { error: uploadError } = await supabase.storage.from(bucket).upload(storagePath, dataCiphertext.buffer.slice(dataCiphertext.byteOffset, dataCiphertext.byteOffset + dataCiphertext.byteLength), {
+          contentType: 'application/octet-stream',
+        });
+        if (uploadError) {
+          console.log('Error reintentando la subida:', uploadError.message);
+          return;
+        }
+
+        const { data: urlData } = supabase.storage.from(bucket).getPublicUrl(storagePath);
+
+        const payload = JSON.stringify({ kind: msg.kind, content: urlData.publicUrl, [nonceField]: util.encodeBase64(dataNonce), duration: msg.duration, id: msg.id });
+        const nonce = nacl.randomBytes(24);
+        const ciphertext = nacl.secretbox(util.decodeUTF8(payload), nonce, messageKey);
+        persistRatchet(username, selectedUser.username, state);
+
+        ws.current.send(JSON.stringify({
+          type: 'direct-message',
+          to: selectedUser.username,
+          ciphertext: util.encodeBase64(ciphertext),
+          nonce: util.encodeBase64(nonce),
+          counter,
+        }));
+
+        setConversations((prev) => ({
+          ...prev,
+          [selectedUser.username]: (prev[selectedUser.username] || []).map((m) => (m.id === msg.id ? { ...m, status: 'sent' } : m)),
+        }));
+      } catch (e) {
+        console.log('Error reintentando el envio de media:', e);
+      }
       return;
     }
 
@@ -833,55 +905,7 @@ export default function ChatScreen() {
     ws.current.send(JSON.stringify({ type: 'update-profile-picture', profilePicture: result.assets[0].base64 }));
   };
 
-  const sendImage = async () => {
-    if (!selectedUser) return;
-    const state = ratchets.current[selectedUser.username];
-    if (!state) return;
-
-    const permission = await ImagePicker.requestMediaLibraryPermissionsAsync();
-    if (!permission.granted) {
-      console.log('Permiso de galería no concedido');
-      return;
-    }
-
-    const result = await ImagePicker.launchImageLibraryAsync({
-      mediaTypes: ImagePicker.MediaTypeOptions.Images,
-      quality: 0.4,
-      base64: true,
-    });
-
-    if (result.canceled || !result.assets || !result.assets[0].base64) return;
-
-    const base64Image = result.assets[0].base64;
-    const msgId = Date.now().toString() + Math.random().toString(36).slice(2);
-
-    if (!ws.current || ws.current.readyState !== WebSocket.OPEN) {
-      console.log('⚠️ No se pudo enviar: sin conexión en este momento');
-      const failedMsg: Message = { id: msgId, text: base64Image, kind: 'image', sentByMe: true, timestamp: Date.now(), status: 'failed' };
-      setConversations((prev) => ({ ...prev, [selectedUser.username]: [...(prev[selectedUser.username] || []), failedMsg] }));
-      return;
-    }
-
-    const payload = JSON.stringify({ kind: 'image', content: base64Image, id: msgId });
-    const { messageKey, counter } = takeSendKey(state);
-    const nonce = nacl.randomBytes(24);
-    const ciphertext = nacl.secretbox(util.decodeUTF8(payload), nonce, messageKey);
-    persistRatchet(username, selectedUser.username, state);
-
-    ws.current.send(JSON.stringify({
-      type: 'direct-message',
-      to: selectedUser.username,
-      ciphertext: util.encodeBase64(ciphertext),
-      nonce: util.encodeBase64(nonce),
-      counter,
-    }));
-
-    const newMsg: Message = { id: msgId, text: base64Image, kind: 'image', sentByMe: true, timestamp: Date.now(), status: 'sent' };
-    setConversations((prev) => ({ ...prev, [selectedUser.username]: [...(prev[selectedUser.username] || []), newMsg] }));
-  };
-
-  const sendVideo = async () => {
-    console.log('Boton de video presionado');
+  const sendMedia = async () => {
     if (!selectedUser) return;
     const state = ratchets.current[selectedUser.username];
     if (!state) return;
@@ -893,23 +917,93 @@ export default function ChatScreen() {
     }
 
     const result = await ImagePicker.launchImageLibraryAsync({
-      mediaTypes: ImagePicker.MediaTypeOptions.Videos,
+      mediaTypes: ImagePicker.MediaTypeOptions.All,
+      quality: 0.4,
       videoMaxDuration: 30,
     });
 
-    console.log('Resultado del selector de video: canceled=', result.canceled, 'assets=', result.assets ? result.assets.length : 0);
-    if (result.canceled || !result.assets || !result.assets[0].uri) {
-      console.log('No se selecciono ningun video valido, cancelando envio');
+    if (result.canceled || !result.assets || !result.assets[0]) return;
+
+    const asset = result.assets[0];
+    const isVideo = asset.type === 'video';
+    console.log('Selector de galeria: tipo=', asset.type, 'uri=', asset.uri);
+
+    if (isVideo) {
+      console.log('Boton de video presionado');
+      if (!asset.uri) return;
+      const localUri = asset.uri;
+      console.log('Video local seleccionado, uri:', localUri);
+      const msgId = Date.now().toString() + Math.random().toString(36).slice(2);
+
+      if (!ws.current || ws.current.readyState !== WebSocket.OPEN) {
+        console.log('No se pudo enviar: sin conexion en este momento');
+        const failedMsg: Message = { id: msgId, text: localUri, kind: 'video', sentByMe: true, timestamp: Date.now(), status: 'failed' };
+        setConversations((prev) => ({ ...prev, [selectedUser.username]: [...(prev[selectedUser.username] || []), failedMsg] }));
+        return;
+      }
+
+      try {
+        const { messageKey, counter } = takeSendKey(state);
+        console.log('Llave de cifrado obtenida, contador:', counter);
+
+        const base64Video = await FileSystem.readAsStringAsync(localUri, { encoding: FileSystem.EncodingType.Base64 });
+        console.log('Video leido y convertido a base64, tamano:', base64Video.length);
+        const videoBytes = util.decodeBase64(base64Video);
+        const videoNonce = nacl.randomBytes(24);
+        const videoCiphertext = nacl.secretbox(videoBytes, videoNonce, messageKey);
+        console.log('Video cifrado localmente, tamano:', videoCiphertext.length);
+
+        const storagePath = `${msgId}.bin`;
+        console.log('Subiendo video a Supabase Storage...');
+        const { error: uploadError } = await supabase.storage.from('videos').upload(storagePath, videoCiphertext.buffer.slice(videoCiphertext.byteOffset, videoCiphertext.byteOffset + videoCiphertext.byteLength), {
+          contentType: 'application/octet-stream',
+        });
+        console.log('Respuesta de Supabase Storage, error:', uploadError ? uploadError.message : 'ninguno');
+        if (uploadError) {
+          console.log('Error subiendo el video:', uploadError.message);
+          const failedMsg: Message = { id: msgId, text: localUri, kind: 'video', sentByMe: true, timestamp: Date.now(), status: 'failed' };
+          setConversations((prev) => ({ ...prev, [selectedUser.username]: [...(prev[selectedUser.username] || []), failedMsg] }));
+          return;
+        }
+
+        const { data: urlData } = supabase.storage.from('videos').getPublicUrl(storagePath);
+        console.log('URL publica del video:', urlData.publicUrl);
+
+        const payload = JSON.stringify({ kind: 'video', content: urlData.publicUrl, videoNonce: util.encodeBase64(videoNonce), id: msgId });
+        const nonce = nacl.randomBytes(24);
+        const ciphertext = nacl.secretbox(util.decodeUTF8(payload), nonce, messageKey);
+        persistRatchet(username, selectedUser.username, state);
+
+        console.log('Enviando mensaje cifrado por WebSocket, readyState:', ws.current.readyState);
+        ws.current.send(JSON.stringify({
+          type: 'direct-message',
+          to: selectedUser.username,
+          ciphertext: util.encodeBase64(ciphertext),
+          nonce: util.encodeBase64(nonce),
+          counter,
+        }));
+        console.log('Mensaje de video enviado por WebSocket sin errores');
+
+        const newMsg: Message = { id: msgId, text: localUri, kind: 'video', sentByMe: true, timestamp: Date.now(), status: 'sent' };
+        setConversations((prev) => ({ ...prev, [selectedUser.username]: [...(prev[selectedUser.username] || []), newMsg] }));
+        console.log('Video enviado completamente con exito');
+      } catch (e) {
+        console.log('Error mandando el video:', e);
+      }
       return;
     }
 
-    const localUri = result.assets[0].uri;
-    console.log('Video local seleccionado, uri:', localUri);
+    if (!asset.uri) {
+      console.log('La imagen seleccionada no tiene uri, cancelando envio');
+      return;
+    }
+    const localUri = asset.uri;
+    console.log('Imagen local seleccionada, uri:', localUri);
     const msgId = Date.now().toString() + Math.random().toString(36).slice(2);
 
     if (!ws.current || ws.current.readyState !== WebSocket.OPEN) {
       console.log('No se pudo enviar: sin conexion en este momento');
-      const failedMsg: Message = { id: msgId, text: localUri, kind: 'video', sentByMe: true, timestamp: Date.now(), status: 'failed' };
+      const failedMsg: Message = { id: msgId, text: localUri, kind: 'image', sentByMe: true, timestamp: Date.now(), status: 'failed' };
       setConversations((prev) => ({ ...prev, [selectedUser.username]: [...(prev[selectedUser.username] || []), failedMsg] }));
       return;
     }
@@ -918,30 +1012,30 @@ export default function ChatScreen() {
       const { messageKey, counter } = takeSendKey(state);
       console.log('Llave de cifrado obtenida, contador:', counter);
 
-      const base64Video = await FileSystem.readAsStringAsync(localUri, { encoding: FileSystem.EncodingType.Base64 });
-      console.log('Video leido y convertido a base64, tamano:', base64Video.length);
-      const videoBytes = util.decodeBase64(base64Video);
-      const videoNonce = nacl.randomBytes(24);
-      const videoCiphertext = nacl.secretbox(videoBytes, videoNonce, messageKey);
-      console.log('Video cifrado localmente, tamano:', videoCiphertext.length);
+      const base64Image = await FileSystem.readAsStringAsync(localUri, { encoding: FileSystem.EncodingType.Base64 });
+      console.log('Imagen leida y convertida a base64, tamano:', base64Image.length);
+      const imageBytes = util.decodeBase64(base64Image);
+      const imageNonce = nacl.randomBytes(24);
+      const imageCiphertext = nacl.secretbox(imageBytes, imageNonce, messageKey);
+      console.log('Imagen cifrada localmente, tamano:', imageCiphertext.length);
 
       const storagePath = `${msgId}.bin`;
-      console.log('Subiendo video a Supabase Storage...');
-      const { error: uploadError } = await supabase.storage.from('videos').upload(storagePath, videoCiphertext.buffer.slice(videoCiphertext.byteOffset, videoCiphertext.byteOffset + videoCiphertext.byteLength), {
+      console.log('Subiendo imagen a Supabase Storage...');
+      const { error: uploadError } = await supabase.storage.from('videos').upload(storagePath, imageCiphertext.buffer.slice(imageCiphertext.byteOffset, imageCiphertext.byteOffset + imageCiphertext.byteLength), {
         contentType: 'application/octet-stream',
       });
       console.log('Respuesta de Supabase Storage, error:', uploadError ? uploadError.message : 'ninguno');
       if (uploadError) {
-        console.log('Error subiendo el video:', uploadError.message);
-        const failedMsg: Message = { id: msgId, text: localUri, kind: 'video', sentByMe: true, timestamp: Date.now(), status: 'failed' };
+        console.log('Error subiendo la imagen:', uploadError.message);
+        const failedMsg: Message = { id: msgId, text: localUri, kind: 'image', sentByMe: true, timestamp: Date.now(), status: 'failed' };
         setConversations((prev) => ({ ...prev, [selectedUser.username]: [...(prev[selectedUser.username] || []), failedMsg] }));
         return;
       }
 
       const { data: urlData } = supabase.storage.from('videos').getPublicUrl(storagePath);
-      console.log('URL publica del video:', urlData.publicUrl);
+      console.log('URL publica de la imagen:', urlData.publicUrl);
 
-      const payload = JSON.stringify({ kind: 'video', content: urlData.publicUrl, videoNonce: util.encodeBase64(videoNonce), id: msgId });
+      const payload = JSON.stringify({ kind: 'image', content: urlData.publicUrl, imageNonce: util.encodeBase64(imageNonce), id: msgId });
       const nonce = nacl.randomBytes(24);
       const ciphertext = nacl.secretbox(util.decodeUTF8(payload), nonce, messageKey);
       persistRatchet(username, selectedUser.username, state);
@@ -954,13 +1048,13 @@ export default function ChatScreen() {
         nonce: util.encodeBase64(nonce),
         counter,
       }));
-      console.log('Mensaje de video enviado por WebSocket sin errores');
+      console.log('Mensaje de imagen enviado por WebSocket sin errores');
 
-      const newMsg: Message = { id: msgId, text: localUri, kind: 'video', sentByMe: true, timestamp: Date.now(), status: 'sent' };
+      const newMsg: Message = { id: msgId, text: localUri, kind: 'image', sentByMe: true, timestamp: Date.now(), status: 'sent' };
       setConversations((prev) => ({ ...prev, [selectedUser.username]: [...(prev[selectedUser.username] || []), newMsg] }));
-      console.log('Video enviado completamente con exito');
+      console.log('Imagen enviada completamente con exito');
     } catch (e) {
-      console.log('Error mandando el video:', e);
+      console.log('Error mandando la imagen:', e);
     }
   };
 
@@ -1282,7 +1376,7 @@ export default function ChatScreen() {
                     (item.kind === 'image' || item.kind === 'video') && styles.imageBubble,
                   ]}>
                     {item.kind === 'image' ? (
-                      <Image source={{ uri: `data:image/jpeg;base64,${item.text}` }} style={styles.messageImage} resizeMode="cover" />
+                      <Image source={{ uri: item.text }} style={styles.messageImage} resizeMode="cover" />
                     ) : item.kind === 'video' ? (
                       <VideoBubble uri={item.text} style={styles.messageImage} />
                     ) : item.kind === 'voice' ? (
@@ -1333,11 +1427,8 @@ export default function ChatScreen() {
             <TouchableOpacity style={styles.attachButton} onPress={() => setShowStickers((v) => !v)} activeOpacity={0.7}>
               <Text style={styles.attachButtonIcon}>😀</Text>
             </TouchableOpacity>
-            <TouchableOpacity style={styles.attachButton} onPress={sendImage} activeOpacity={0.7}>
+            <TouchableOpacity style={styles.attachButton} onPress={sendMedia} activeOpacity={0.7}>
               <Text style={styles.attachButtonIcon}>📎</Text>
-            </TouchableOpacity>
-            <TouchableOpacity style={styles.attachButton} onPress={sendVideo} activeOpacity={0.7}>
-              <Text style={styles.attachButtonIcon}>🎥</Text>
             </TouchableOpacity>
             <TouchableOpacity
               style={[styles.attachButton, isRecording && styles.attachButtonRecording]}

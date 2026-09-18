@@ -1,0 +1,26 @@
+﻿const fs = require('fs');
+const path = 'src/app/index.tsx';
+
+let src = fs.readFileSync(path, 'utf8');
+const hadCRLF = src.indexOf('\r\n') !== -1;
+if (hadCRLF) src = src.split('\r\n').join('\n');
+
+function applyReplace(source, oldStr, newStr, label) {
+  const count = source.split(oldStr).length - 1;
+  if (count !== 1) {
+    throw new Error("No se encontro (o se encontro mas de una vez) el ancla: " + label + " (coincidencias: " + count + ")");
+  }
+  return source.split(oldStr).join(newStr);
+}
+
+// 1. arreglar retrySend para que vuelva a subir foto/video/nota de voz en vez de solo reenviar el texto guardado
+src = applyReplace(
+  src,
+  "  const retrySend = (msg: Message) => {\n    if (!selectedUser) return;\n    const state = ratchets.current[selectedUser.username];\n    if (!state || !ws.current || ws.current.readyState !== WebSocket.OPEN) {\n      console.log('⚠️ Sigue sin conexión, no se pudo reintentar');\n      return;\n    }\n\n    const payload = JSON.stringify({ kind: msg.kind, content: msg.text, id: msg.id });\n    const { messageKey, counter } = takeSendKey(state);\n    const nonce = nacl.randomBytes(24);\n    const ciphertext = nacl.secretbox(util.decodeUTF8(payload), nonce, messageKey);\n    persistRatchet(username, selectedUser.username, state);\n\n    ws.current.send(JSON.stringify({\n      type: 'direct-message',\n      to: selectedUser.username,\n      ciphertext: util.encodeBase64(ciphertext),\n      nonce: util.encodeBase64(nonce),\n      counter,\n    }));\n\n    setConversations((prev) => ({\n      ...prev,\n      [selectedUser.username]: (prev[selectedUser.username] || []).map((m) => (m.id === msg.id ? { ...m, status: 'sent' } : m)),\n    }));\n  };",
+  "  const retrySend = async (msg: Message) => {\n    if (!selectedUser) return;\n    const state = ratchets.current[selectedUser.username];\n    if (!state || !ws.current || ws.current.readyState !== WebSocket.OPEN) {\n      console.log('⚠️ Sigue sin conexión, no se pudo reintentar');\n      return;\n    }\n\n    if (msg.kind === 'image' || msg.kind === 'video' || msg.kind === 'voice') {\n      try {\n        const { messageKey, counter } = takeSendKey(state);\n        const localUri = msg.text;\n        const base64Data = await FileSystem.readAsStringAsync(localUri, { encoding: FileSystem.EncodingType.Base64 });\n        const dataBytes = util.decodeBase64(base64Data);\n        const dataNonce = nacl.randomBytes(24);\n        const dataCiphertext = nacl.secretbox(dataBytes, dataNonce, messageKey);\n\n        const bucket = msg.kind === 'voice' ? 'voices' : 'videos';\n        const nonceField = msg.kind === 'voice' ? 'audioNonce' : msg.kind === 'video' ? 'videoNonce' : 'imageNonce';\n        const storagePath = `${msg.id}.bin`;\n        const { error: uploadError } = await supabase.storage.from(bucket).upload(storagePath, dataCiphertext.buffer.slice(dataCiphertext.byteOffset, dataCiphertext.byteOffset + dataCiphertext.byteLength), {\n          contentType: 'application/octet-stream',\n        });\n        if (uploadError) {\n          console.log('Error reintentando la subida:', uploadError.message);\n          return;\n        }\n\n        const { data: urlData } = supabase.storage.from(bucket).getPublicUrl(storagePath);\n\n        const payload = JSON.stringify({ kind: msg.kind, content: urlData.publicUrl, [nonceField]: util.encodeBase64(dataNonce), duration: msg.duration, id: msg.id });\n        const nonce = nacl.randomBytes(24);\n        const ciphertext = nacl.secretbox(util.decodeUTF8(payload), nonce, messageKey);\n        persistRatchet(username, selectedUser.username, state);\n\n        ws.current.send(JSON.stringify({\n          type: 'direct-message',\n          to: selectedUser.username,\n          ciphertext: util.encodeBase64(ciphertext),\n          nonce: util.encodeBase64(nonce),\n          counter,\n        }));\n\n        setConversations((prev) => ({\n          ...prev,\n          [selectedUser.username]: (prev[selectedUser.username] || []).map((m) => (m.id === msg.id ? { ...m, status: 'sent' } : m)),\n        }));\n      } catch (e) {\n        console.log('Error reintentando el envio de media:', e);\n      }\n      return;\n    }\n\n    const payload = JSON.stringify({ kind: msg.kind, content: msg.text, id: msg.id });\n    const { messageKey, counter } = takeSendKey(state);\n    const nonce = nacl.randomBytes(24);\n    const ciphertext = nacl.secretbox(util.decodeUTF8(payload), nonce, messageKey);\n    persistRatchet(username, selectedUser.username, state);\n\n    ws.current.send(JSON.stringify({\n      type: 'direct-message',\n      to: selectedUser.username,\n      ciphertext: util.encodeBase64(ciphertext),\n      nonce: util.encodeBase64(nonce),\n      counter,\n    }));\n\n    setConversations((prev) => ({\n      ...prev,\n      [selectedUser.username]: (prev[selectedUser.username] || []).map((m) => (m.id === msg.id ? { ...m, status: 'sent' } : m)),\n    }));\n  };",
+  "arreglar retrySend para que vuelva a subir foto/video/nota de voz en vez de solo reenviar el texto guardado"
+);
+
+if (hadCRLF) src = src.split('\n').join('\r\n');
+fs.writeFileSync(path, src, 'utf8');
+console.log('Listo: reintentar ahora vuelve a subir foto/video/nota de voz correctamente');
