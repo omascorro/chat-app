@@ -8,6 +8,7 @@ import { AppLock } from '../components/AppLock';
 import { useChatTheme } from '../components/chat/useChatTheme';
 import { client } from '../lib/client';
 import { log } from '../lib/log';
+import { useAutoUpdates } from '../lib/updates';
 import { AuthScreen, RecoveryCodeScreen } from '../screens/AuthScreen';
 import { ChatScreen } from '../screens/ChatScreen';
 import { ContactsScreen } from '../screens/ContactsScreen';
@@ -29,6 +30,7 @@ export default function App() {
 
   // Nada de capturas ni grabaciones de pantalla dentro de la app
   ScreenCapture.usePreventScreenCapture();
+  useAutoUpdates();
 
   useEffect(() => {
     client.boot().catch((e) => log('Error al arrancar:', e));
