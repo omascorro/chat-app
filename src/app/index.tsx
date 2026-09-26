@@ -2,6 +2,7 @@ import AsyncStorage from '@react-native-async-storage/async-storage';
 import Constants from 'expo-constants';
 import * as FileSystem from 'expo-file-system/legacy';
 import * as ImagePicker from 'expo-image-picker';
+import * as ImageManipulator from 'expo-image-manipulator';
 import * as Notifications from 'expo-notifications';
 import * as SecureStore from 'expo-secure-store';
 import { StatusBar } from 'expo-status-bar';
@@ -9,6 +10,8 @@ import { useVideoPlayer, VideoView } from 'expo-video';
 import { AudioModule, RecordingPresets, setAudioModeAsync, useAudioPlayer, useAudioPlayerStatus, useAudioRecorder } from 'expo-audio';
 import { useEffect, useMemo, useRef, useState } from 'react';
 import {
+  Alert,
+  AppState,
   FlatList,
   Image,
   KeyboardAvoidingView,
@@ -22,6 +25,7 @@ import {
   View,
 } from 'react-native';
 import 'react-native-get-random-values';
+import ImageViewing from 'react-native-image-viewing';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import nacl from 'tweetnacl';
 import util from 'tweetnacl-util';
@@ -316,6 +320,7 @@ export default function ChatScreen() {
   const [showStickers, setShowStickers] = useState(false);
   const [selfDestructMode, setSelfDestructMode] = useState<Record<string, boolean>>({});
   const [myProfilePicture, setMyProfilePicture] = useState<string | null>(null);
+  const [zoomImageUri, setZoomImageUri] = useState<string | null>(null);
   const [isRecording, setIsRecording] = useState(false);
   const [recordingSeconds, setRecordingSeconds] = useState(0);
   const audioRecorder = useAudioRecorder(RecordingPresets.HIGH_QUALITY);
@@ -331,8 +336,17 @@ export default function ChatScreen() {
   const flatListRef = useRef<FlatList>(null);
   const recordingTimerRef = useRef<ReturnType<typeof setInterval> | null>(null);
 
+  const selectedUserRef = useRef<OnlineUser | null>(null);
+  const receiptedMessageIds = useRef<Set<string>>(new Set());
+  const authenticatedRef = useRef(false);
+  const reconnectTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  // Cola por remitente: los mensajes de un mismo contacto avanzan el ratchet uno a la vez
+  const inboundQueues = useRef<Record<string, Promise<unknown>>>({});
+
   useEffect(() => { onlineUsersRef.current = onlineUsers; }, [onlineUsers]);
   useEffect(() => { usernameRef.current = username; }, [username]);
+  useEffect(() => { selectedUserRef.current = selectedUser; }, [selectedUser]);
+  useEffect(() => { authenticatedRef.current = authenticated; }, [authenticated]);
 
   useEffect(() => {
     if (!selectedUser) return;
@@ -471,11 +485,13 @@ export default function ChatScreen() {
     if (data.type === 'direct-message') {
       const sender = data.from;
 
-      (async () => {
+      // Solo la parte del ratchet va en la cola; la descarga de media corre despues sin bloquear al siguiente mensaje
+      const ratchetStep = (inboundQueues.current[sender] || Promise.resolve()).then(async () => {
         if (!ratchets.current[sender]) {
           const senderPublicKey = data.fromPublicKey || onlineUsersRef.current.find((u) => u.username === sender)?.publicKey;
-          if (!senderPublicKey || !myKeys.current) return;
-          ratchets.current[sender] = await loadOrCreateRatchet(usernameRef.current, sender, senderPublicKey, myKeys.current.secretKey);
+          if (!senderPublicKey || !myKeys.current) return null;
+          const loaded = await loadOrCreateRatchet(usernameRef.current, sender, senderPublicKey, myKeys.current.secretKey);
+          if (!ratchets.current[sender]) ratchets.current[sender] = loaded;
         }
 
         const state = ratchets.current[sender];
@@ -483,15 +499,29 @@ export default function ChatScreen() {
         const messageKey = resolveRecvKey(state, incomingCounter);
         if (!messageKey) {
           persistRatchet(usernameRef.current, sender, state);
-          return;
+          return null;
         }
         const decrypted = nacl.secretbox.open(util.decodeBase64(data.ciphertext), util.decodeBase64(data.nonce), messageKey);
         if (!decrypted) {
           console.log('🔴 FALLÓ AL DESCIFRAR el mensaje de', sender, '— probablemente el ratchet está desincronizado');
-          return;
+          return null;
         }
         console.log('🟢 Descifrado correctamente');
         persistRatchet(usernameRef.current, sender, state);
+        return { messageKey, decrypted };
+      });
+      inboundQueues.current[sender] = ratchetStep.catch(() => {});
+
+      (async () => {
+        let step: { messageKey: Uint8Array; decrypted: Uint8Array } | null;
+        try {
+          step = await ratchetStep;
+        } catch (e) {
+          console.log('Error procesando el ratchet del mensaje de', sender, e);
+          return;
+        }
+        if (!step) return;
+        const { messageKey, decrypted } = step;
 
         const payloadStr = util.encodeUTF8(decrypted);
         let parsed: { kind: 'text' | 'image' | 'sticker' | 'video' | 'voice'; content: string; id: string; videoNonce?: string; audioNonce?: string; imageNonce?: string; duration?: number; selfDestruct?: boolean };
@@ -574,32 +604,49 @@ export default function ChatScreen() {
           scheduleSelfDestruct(sender, parsed.id);
         }
 
-        ws.current?.send(JSON.stringify({ type: 'read-receipt', to: sender, messageId: parsed.id }));
+        const estaViendoEsaConversacionAhora = selectedUserRef.current?.username === sender && AppState.currentState === 'active';
+        if (estaViendoEsaConversacionAhora) {
+          receiptedMessageIds.current.add(parsed.id);
+          ws.current?.send(JSON.stringify({ type: 'read-receipt', to: sender, messageId: parsed.id }));
+        }
       })();
     }
   };
 
   const connectWebSocket = () => {
+    // Cancelar un reintento pendiente para no terminar con dos sockets a la vez
+    if (reconnectTimerRef.current) {
+      clearTimeout(reconnectTimerRef.current);
+      reconnectTimerRef.current = null;
+    }
+
     const socket = new WebSocket(SERVER_URL);
     ws.current = socket;
 
     socket.onopen = () => {
+      if (ws.current !== socket) return;
       setConnected(true);
-      if (pendingAuth.current && authenticated) {
+      if (pendingAuth.current && authenticatedRef.current) {
         reauthenticate(socket);
       }
     };
 
     socket.onclose = () => {
+      // Un socket viejo que se cierra tarde no debe marcar como desconectado al socket actual
+      if (ws.current !== socket) return;
       setConnected(false);
       if (shouldReconnect.current) {
-        setTimeout(() => {
+        reconnectTimerRef.current = setTimeout(() => {
+          reconnectTimerRef.current = null;
           if (shouldReconnect.current) connectWebSocket();
         }, 2000);
       }
     };
 
-    socket.onmessage = handleSocketMessage;
+    socket.onmessage = (event) => {
+      if (ws.current !== socket) return;
+      handleSocketMessage(event);
+    };
   };
 
   useEffect(() => {
@@ -607,8 +654,27 @@ export default function ChatScreen() {
     connectWebSocket();
     return () => {
       shouldReconnect.current = false;
+      if (reconnectTimerRef.current) clearTimeout(reconnectTimerRef.current);
       ws.current?.close();
     };
+  }, []);
+
+  useEffect(() => {
+    let previousAppState = AppState.currentState;
+    const subscription = AppState.addEventListener('change', (nextAppState) => {
+      const vieneDeSegundoPlano = /inactive|background/.test(previousAppState) && nextAppState === 'active';
+      previousAppState = nextAppState;
+      if (vieneDeSegundoPlano) {
+        console.log('La app volvio a primer plano, forzando conexion nueva (la anterior puede estar muerta sin avisar)...');
+        if (ws.current) {
+          ws.current.onclose = null;
+          ws.current.close();
+        }
+        shouldReconnect.current = true;
+        connectWebSocket();
+      }
+    });
+    return () => subscription.remove();
   }, []);
 
   const submitAuth = async () => {
@@ -732,9 +798,17 @@ export default function ChatScreen() {
 
   const openConversation = async (user: OnlineUser) => {
     if (!ratchets.current[user.username] && myKeys.current) {
-      ratchets.current[user.username] = await loadOrCreateRatchet(username, user.username, user.publicKey, myKeys.current.secretKey);
+      const loaded = await loadOrCreateRatchet(username, user.username, user.publicKey, myKeys.current.secretKey);
+      // Si llego un mensaje mientras cargaba, ese ratchet ya avanzo: no lo pisamos
+      if (!ratchets.current[user.username]) ratchets.current[user.username] = loaded;
     }
     setSelectedUser(user);
+
+    const pendientes = (conversations[user.username] || []).filter((m) => !m.sentByMe && !receiptedMessageIds.current.has(m.id));
+    pendientes.forEach((m) => {
+      receiptedMessageIds.current.add(m.id);
+      ws.current?.send(JSON.stringify({ type: 'read-receipt', to: user.username, messageId: m.id }));
+    });
   };
 
   const sendMessage = () => {
@@ -997,16 +1071,29 @@ export default function ChatScreen() {
       console.log('La imagen seleccionada no tiene uri, cancelando envio');
       return;
     }
-    const localUri = asset.uri;
-    console.log('Imagen local seleccionada, uri:', localUri);
     const msgId = Date.now().toString() + Math.random().toString(36).slice(2);
 
     if (!ws.current || ws.current.readyState !== WebSocket.OPEN) {
       console.log('No se pudo enviar: sin conexion en este momento');
-      const failedMsg: Message = { id: msgId, text: localUri, kind: 'image', sentByMe: true, timestamp: Date.now(), status: 'failed' };
+      const failedMsg: Message = { id: msgId, text: asset.uri, kind: 'image', sentByMe: true, timestamp: Date.now(), status: 'failed' };
       setConversations((prev) => ({ ...prev, [selectedUser.username]: [...(prev[selectedUser.username] || []), failedMsg] }));
       return;
     }
+
+    let localUri = asset.uri;
+    try {
+      console.log('Reduciendo tamano de la imagen antes de cifrarla...');
+      const manipulated = await ImageManipulator.manipulateAsync(
+        asset.uri,
+        [{ resize: { width: 1600 } }],
+        { compress: 0.5, format: ImageManipulator.SaveFormat.JPEG }
+      );
+      localUri = manipulated.uri;
+      console.log('Imagen reducida, uri:', localUri);
+    } catch (resizeError) {
+      console.log('No se pudo reducir la imagen, se usa la original:', resizeError);
+    }
+    console.log('Imagen local seleccionada, uri:', localUri);
 
     try {
       const { messageKey, counter } = takeSendKey(state);
@@ -1055,6 +1142,9 @@ export default function ChatScreen() {
       console.log('Imagen enviada completamente con exito');
     } catch (e) {
       console.log('Error mandando la imagen:', e);
+      Alert.alert('No se pudo mandar la foto', String(e && (e as any).message ? (e as any).message : e));
+      const failedMsg: Message = { id: msgId, text: localUri, kind: 'image', sentByMe: true, timestamp: Date.now(), status: 'failed' };
+      setConversations((prev) => ({ ...prev, [selectedUser.username]: [...(prev[selectedUser.username] || []), failedMsg] }));
     }
   };
 
@@ -1376,7 +1466,9 @@ export default function ChatScreen() {
                     (item.kind === 'image' || item.kind === 'video') && styles.imageBubble,
                   ]}>
                     {item.kind === 'image' ? (
-                      <Image source={{ uri: item.text }} style={styles.messageImage} resizeMode="cover" />
+                      <TouchableOpacity onPress={() => setZoomImageUri(item.text)} activeOpacity={0.9}>
+                        <Image source={{ uri: item.text }} style={styles.messageImage} resizeMode="cover" />
+                      </TouchableOpacity>
                     ) : item.kind === 'video' ? (
                       <VideoBubble uri={item.text} style={styles.messageImage} />
                     ) : item.kind === 'voice' ? (
@@ -1458,6 +1550,12 @@ export default function ChatScreen() {
           </View>
         </KeyboardAvoidingView>
       </SafeAreaView>
+      <ImageViewing
+        images={zoomImageUri ? [{ uri: zoomImageUri }] : []}
+        imageIndex={0}
+        visible={!!zoomImageUri}
+        onRequestClose={() => setZoomImageUri(null)}
+      />
     </>
   );
 }
