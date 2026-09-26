@@ -145,6 +145,12 @@ export async function wipeCache() {
   await deleteFile(CACHE_DIR);
 }
 
+// Boton de panico: todos los archivos (cifrados y temporales) de la app
+export async function wipeAllMedia() {
+  await deleteFile(MEDIA_DIR);
+  await deleteFile(CACHE_DIR);
+}
+
 export async function readMediaFileBase64(mediaFile: string): Promise<string> {
   return FileSystem.readAsStringAsync(mediaFile, { encoding: FileSystem.EncodingType.Base64 });
 }

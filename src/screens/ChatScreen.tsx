@@ -8,18 +8,15 @@ import ImageViewing from 'react-native-image-viewing';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { Avatar } from '../components/chat/Avatar';
 import { describeMessage, MessageBubble } from '../components/chat/MessageBubble';
-import { MessageActions } from '../components/chat/Modals';
+import { MessageActions, OptionsModal } from '../components/chat/Modals';
 import { useChatTheme } from '../components/chat/useChatTheme';
 import { client, ClientState } from '../lib/client';
 import { log } from '../lib/log';
-import { deleteIfAppFile } from '../lib/media';
-import { ChatMessage } from '../lib/types';
+import { decryptToCache, deleteIfAppFile, removeFromCache } from '../lib/media';
+import { ChatMessage, formatTtl, shortTtl, TIMER_OPTIONS } from '../lib/types';
 import { ContactInfoScreen } from './ContactInfoScreen';
 
 const STICKERS = ['🦅', '🎖️', '🫡', '💪', '🔥', '❤️', '😂', '👍', '💥', '🎯', '☕', '🌙'];
-
-// Se recuerda mientras la app esta abierta, por contacto
-const selfDestructByPeer = new Map<string, boolean>();
 
 export function ChatScreen({ state, peer }: { state: ClientState; peer: string }) {
   const { isDark, colors, styles } = useChatTheme();
@@ -27,7 +24,9 @@ export function ChatScreen({ state, peer }: { state: ClientState; peer: string }
 
   const [inputText, setInputText] = useState('');
   const [showStickers, setShowStickers] = useState(false);
-  const [selfDestruct, setSelfDestruct] = useState(!!selfDestructByPeer.get(peer));
+  const [timerMenu, setTimerMenu] = useState(false);
+  const [viewOnceOpen, setViewOnceOpen] = useState<{ id: string; uri: string } | null>(null);
+  const timer = state.timers[peer] || 0;
   const [replyTo, setReplyTo] = useState<ChatMessage | null>(null);
   const [editing, setEditing] = useState<ChatMessage | null>(null);
   const [actionTarget, setActionTarget] = useState<ChatMessage | null>(null);
@@ -65,9 +64,21 @@ export function ChatScreen({ state, peer }: { state: ClientState; peer: string }
     if (recordingTimerRef.current) clearInterval(recordingTimerRef.current);
   }, []);
 
-  const toggleSelfDestruct = () => {
-    selfDestructByPeer.set(peer, !selfDestruct);
-    setSelfDestruct(!selfDestruct);
+  const openViewOnce = async (m: ChatMessage) => {
+    if (!m.mediaFile || !m.media) return;
+    try {
+      setViewOnceOpen({ id: m.id, uri: await decryptToCache(m.id, 'image', m.mediaFile, m.media) });
+    } catch (e) {
+      Alert.alert('No se pudo abrir la foto', String((e as Error)?.message ?? e));
+    }
+  };
+
+  const closeViewOnce = () => {
+    if (!viewOnceOpen) return;
+    const { id } = viewOnceOpen;
+    setViewOnceOpen(null);
+    removeFromCache(id);
+    client.markViewOnceViewed(peer, id);
   };
 
   const send = () => {
@@ -79,14 +90,24 @@ export function ChatScreen({ state, peer }: { state: ClientState; peer: string }
       setEditing(null);
       return;
     }
-    client.sendText(peer, text, { replyTo: replyTo?.id ?? null, selfDestruct });
+    client.sendText(peer, text, { replyTo: replyTo?.id ?? null });
     setReplyTo(null);
   };
 
   const sendSticker = (emoji: string) => {
     setShowStickers(false);
-    client.sendSticker(peer, emoji, { selfDestruct });
+    client.sendSticker(peer, emoji);
   };
+
+  // Para fotos se pregunta si es normal o de "ver una vez"
+  const askImageMode = () =>
+    new Promise<'normal' | 'viewOnce' | null>((resolve) => {
+      Alert.alert('Enviar foto', '¿Cómo quieres mandarla?', [
+        { text: 'Cancelar', style: 'cancel', onPress: () => resolve(null) },
+        { text: 'Ver una vez', onPress: () => resolve('viewOnce') },
+        { text: 'Normal', onPress: () => resolve('normal') },
+      ], { cancelable: true, onDismiss: () => resolve(null) });
+    });
 
   const pickMedia = async () => {
     const permission = await ImagePicker.requestMediaLibraryPermissionsAsync();
@@ -95,6 +116,15 @@ export function ChatScreen({ state, peer }: { state: ClientState; peer: string }
     const asset = result.canceled ? null : result.assets?.[0];
     if (!asset?.uri) return;
     const isVideo = asset.type === 'video';
+    let viewOnce = false;
+    if (!isVideo) {
+      const mode = await askImageMode();
+      if (!mode) {
+        deleteIfAppFile(asset.uri);
+        return;
+      }
+      viewOnce = mode === 'viewOnce';
+    }
 
     let uri = asset.uri;
     if (!isVideo) {
@@ -109,7 +139,7 @@ export function ChatScreen({ state, peer }: { state: ClientState; peer: string }
       }
     }
     try {
-      await client.sendMedia(peer, uri, isVideo ? 'video' : 'image', { replyTo: replyTo?.id ?? null, selfDestruct });
+      await client.sendMedia(peer, uri, isVideo ? 'video' : 'image', { replyTo: replyTo?.id ?? null, viewOnce });
       setReplyTo(null);
     } catch (e) {
       Alert.alert('No se pudo preparar el archivo', String((e as Error)?.message ?? e));
@@ -154,7 +184,7 @@ export function ChatScreen({ state, peer }: { state: ClientState; peer: string }
       return;
     }
     try {
-      await client.sendMedia(peer, localUri, 'voice', { duration: durationSeconds, replyTo: replyTo?.id ?? null, selfDestruct });
+      await client.sendMedia(peer, localUri, 'voice', { duration: durationSeconds, replyTo: replyTo?.id ?? null });
       setReplyTo(null);
     } catch (e) {
       Alert.alert('No se pudo preparar la nota de voz', String((e as Error)?.message ?? e));
@@ -198,11 +228,11 @@ export function ChatScreen({ state, peer }: { state: ClientState; peer: string }
               <Text style={styles.headerIconText}>🔍</Text>
             </TouchableOpacity>
             <TouchableOpacity
-              onPress={toggleSelfDestruct}
-              style={[styles.logoutButton, { marginLeft: 4 }, selfDestruct && styles.selfDestructActive]}
+              onPress={() => setTimerMenu(true)}
+              style={[styles.logoutButton, { marginLeft: 4 }, timer > 0 && styles.selfDestructActive]}
               activeOpacity={0.7}
             >
-              <Text style={styles.logoutButtonText}>⏱ {selfDestruct ? 'ON' : 'OFF'}</Text>
+              <Text style={styles.logoutButtonText}>⏱ {shortTtl(timer)}</Text>
             </TouchableOpacity>
           </View>
 
@@ -259,6 +289,7 @@ export function ChatScreen({ state, peer }: { state: ClientState; peer: string }
                 onZoom={setZoomUri}
                 onRetrySend={(id) => client.retrySend(id)}
                 onRetryDownload={(id) => client.retryDownload(id)}
+                onOpenViewOnce={openViewOnce}
               />
             )}
           />
@@ -350,6 +381,27 @@ export function ChatScreen({ state, peer }: { state: ClientState; peer: string }
         onReact={(m, emoji) => client.react(peer, m.id, emoji)}
       />
       <ImageViewing images={zoomUri ? [{ uri: zoomUri }] : []} imageIndex={0} visible={!!zoomUri} onRequestClose={() => setZoomUri(null)} />
+      <ImageViewing
+        images={viewOnceOpen ? [{ uri: viewOnceOpen.uri }] : []}
+        imageIndex={0}
+        visible={!!viewOnceOpen}
+        onRequestClose={closeViewOnce}
+        swipeToCloseEnabled={false}
+      />
+      <OptionsModal
+        visible={timerMenu}
+        title="MENSAJES TEMPORALES"
+        message={`Los mensajes nuevos se borran de los dos teléfonos después de este tiempo (para ${peer}, desde que los lee). El ajuste cambia también en su teléfono.`}
+        options={TIMER_OPTIONS.map((seconds) => ({
+          label: seconds === 0 ? 'Desactivado' : formatTtl(seconds),
+          selected: seconds === timer,
+          onPress: () => {
+            if (seconds !== timer) client.setTimer(peer, seconds);
+          },
+        }))}
+        styles={styles}
+        onClose={() => setTimerMenu(false)}
+      />
     </>
   );
 }

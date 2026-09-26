@@ -50,6 +50,17 @@ CREATE TABLE IF NOT EXISTS seen_inbox (id TEXT PRIMARY KEY, at INTEGER NOT NULL)
 CREATE TABLE IF NOT EXISTS kv (key TEXT PRIMARY KEY, value TEXT NOT NULL);
 `;
 
+async function addMissingColumns(db: SQLite.SQLiteDatabase, table: string, columns: Record<string, string>) {
+  const existing = new Set((await db.getAllAsync<{ name: string }>(`PRAGMA table_info(${table})`)).map((c) => c.name));
+  for (const [name, type] of Object.entries(columns)) {
+    if (!existing.has(name)) await db.execAsync(`ALTER TABLE ${table} ADD COLUMN ${name} ${type}`);
+  }
+}
+
+export function databaseName(username: string): string {
+  return `aeterna_${userKey(username)}.db`;
+}
+
 type MessageRow = {
   id: string;
   peer: string;
@@ -69,6 +80,9 @@ type MessageRow = {
   deleted: number;
   reactions: string;
   read_by_me: number;
+  ttl: number | null;
+  view_once: number;
+  viewed: number;
 };
 
 function rowToMessage(r: MessageRow): ChatMessage {
@@ -91,6 +105,9 @@ function rowToMessage(r: MessageRow): ChatMessage {
     deleted: r.deleted === 1,
     reactions: JSON.parse(r.reactions),
     readByMe: r.read_by_me === 1,
+    ttl: r.ttl ?? null,
+    viewOnce: r.view_once === 1,
+    viewed: r.viewed === 1,
   };
 }
 
@@ -107,13 +124,13 @@ export class Store {
 
   static async open(username: string, keyHex: string): Promise<Store> {
     if (!/^[0-9a-f]{64}$/.test(keyHex)) throw new Error('Llave de base de datos invalida');
-    const db = await SQLite.openDatabaseAsync(`aeterna_${userKey(username)}.db`);
+    const db = await SQLite.openDatabaseAsync(databaseName(username));
     // Con SQLCipher la llave tiene que ser lo primero que se ejecuta
     await db.execAsync(`PRAGMA key = '${keyHex}'`);
     await db.execAsync(SCHEMA);
-    // Bases creadas por la primera version v2 no tienen last_error
-    const outboxColumns = await db.getAllAsync<{ name: string }>('PRAGMA table_info(outbox)');
-    if (!outboxColumns.some((c) => c.name === 'last_error')) await db.execAsync('ALTER TABLE outbox ADD COLUMN last_error TEXT');
+    // Columnas que se agregaron despues de la primera version v2
+    await addMissingColumns(db, 'outbox', { last_error: 'TEXT' });
+    await addMissingColumns(db, 'messages', { ttl: 'INTEGER', view_once: 'INTEGER NOT NULL DEFAULT 0', viewed: 'INTEGER NOT NULL DEFAULT 0' });
     return new Store(db);
   }
 
@@ -121,16 +138,20 @@ export class Store {
     await this.db.closeAsync();
   }
 
+  static async deleteDatabase(username: string) {
+    await SQLite.deleteDatabaseAsync(databaseName(username));
+  }
+
   // ---- mensajes ----
 
   async insertMessage(m: ChatMessage): Promise<boolean> {
     const res = await this.db.runAsync(
       `INSERT OR IGNORE INTO messages (id, peer, from_me, kind, body, media, media_file, download_state, duration, sent_at, status,
-        self_destruct, expires_at, reply_to, edited_at, deleted, reactions, read_by_me)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        self_destruct, expires_at, reply_to, edited_at, deleted, reactions, read_by_me, ttl, view_once, viewed)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       m.id, m.peer, m.fromMe ? 1 : 0, m.kind, m.body, m.media ? JSON.stringify(m.media) : null, m.mediaFile, m.downloadState,
       m.duration, m.sentAt, m.status, m.selfDestruct ? 1 : 0, m.expiresAt, m.replyTo, m.editedAt, m.deleted ? 1 : 0,
-      JSON.stringify(m.reactions), m.readByMe ? 1 : 0,
+      JSON.stringify(m.reactions), m.readByMe ? 1 : 0, m.ttl, m.viewOnce ? 1 : 0, m.viewed ? 1 : 0,
     );
     return res.changes > 0;
   }
@@ -193,7 +214,12 @@ export class Store {
     return rows.map(rowToMessage);
   }
 
-  // Marca como leidos los mensajes recibidos de `peer`; los que se autodestruyen empiezan su cuenta regresiva ahora
+  async setViewed(id: string) {
+    await this.db.runAsync("UPDATE messages SET viewed = 1, media = NULL, media_file = NULL, download_state = 'none' WHERE id = ?", id);
+  }
+
+  // Marca como leidos los mensajes recibidos de `peer`; los temporales empiezan su cuenta regresiva ahora
+  // (cada uno con su propia duracion; los de versiones anteriores sin duracion usan `selfDestructMs`)
   async markRead(peer: string, selfDestructMs: number): Promise<string[]> {
     const rows = await this.db.getAllAsync<{ id: string; self_destruct: number }>(
       'SELECT id, self_destruct FROM messages WHERE peer = ? AND from_me = 0 AND read_by_me = 0',
@@ -203,8 +229,8 @@ export class Store {
     const now = Date.now();
     await this.db.runAsync('UPDATE messages SET read_by_me = 1 WHERE peer = ? AND from_me = 0 AND read_by_me = 0', peer);
     await this.db.runAsync(
-      'UPDATE messages SET expires_at = ? WHERE peer = ? AND from_me = 0 AND self_destruct = 1 AND expires_at IS NULL',
-      now + selfDestructMs, peer,
+      'UPDATE messages SET expires_at = ? + COALESCE(ttl * 1000, ?) WHERE peer = ? AND from_me = 0 AND self_destruct = 1 AND expires_at IS NULL',
+      now, selfDestructMs, peer,
     );
     return rows.map((r) => r.id);
   }

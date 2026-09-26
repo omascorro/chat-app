@@ -49,6 +49,28 @@ export function SettingsScreen({ onClose }: { onClose: () => void }) {
     setLockEnabled(value);
   };
 
+  const confirmPanic = () => {
+    Alert.alert(
+      'Borrar todo de este teléfono',
+      'Se borran para siempre todos tus mensajes, fotos, videos y llaves de cifrado de este teléfono, y se cierra la sesión. No se puede deshacer; solo podrías recuperar lo que tengas en un respaldo.\n\nAl volver a entrar, el otro teléfono verá el aviso de que tu llave de seguridad cambió.',
+      [
+        { text: 'Cancelar', style: 'cancel' },
+        {
+          text: 'Borrar todo',
+          style: 'destructive',
+          onPress: async () => {
+            if (lockAvailable) {
+              const result = await LocalAuthentication.authenticateAsync({ promptMessage: 'Confirma para borrar todo' });
+              if (!result.success) return;
+            }
+            setBusy('Borrando todo…');
+            await client.panicWipe();
+          },
+        },
+      ],
+    );
+  };
+
   const startExport = () => {
     Alert.alert('Respaldo cifrado', '¿Incluir fotos, videos y notas de voz? El archivo puede quedar muy grande.', [
       { text: 'Cancelar', style: 'cancel' },
@@ -166,6 +188,14 @@ export function SettingsScreen({ onClose }: { onClose: () => void }) {
           <TouchableOpacity style={styles.secondaryButton} onPress={() => client.retryNow()} activeOpacity={0.8}>
             <Text style={styles.secondaryButtonText}>REINTENTAR ENVÍOS AHORA</Text>
           </TouchableOpacity>
+
+          <Text style={styles.infoSectionTitle}>ZONA DE PELIGRO</Text>
+          <TouchableOpacity style={styles.secondaryButton} onPress={confirmPanic} disabled={!!busy} activeOpacity={0.8}>
+            <Text style={styles.dangerButtonText}>🔥 BORRAR TODO DE ESTE TELÉFONO</Text>
+          </TouchableOpacity>
+          <Text style={[styles.settingsHint, { marginTop: 6, marginBottom: 24 }]}>
+            Para una emergencia: borra al instante todo el historial y las llaves de este teléfono.
+          </Text>
         </ScrollView>
       </SafeAreaView>
       <PromptModal

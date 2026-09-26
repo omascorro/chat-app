@@ -26,8 +26,8 @@ function deriveKey(password: string, salt: Uint8Array, iterations: number): Uint
 
 export async function exportBackup(store: Store, username: string, password: string, includeMedia: boolean): Promise<string> {
   if (password.length < BACKUP_PASSWORD_MIN_LENGTH) throw new Error(`La contraseña del respaldo debe tener al menos ${BACKUP_PASSWORD_MIN_LENGTH} caracteres`);
-  // Los mensajes que se autodestruyen nunca se respaldan
-  const messages = (await store.getAllMessages()).filter((m) => !m.selfDestruct && !m.deleted);
+  // Los mensajes temporales y las fotos de "ver una vez" nunca se respaldan
+  const messages = (await store.getAllMessages()).filter((m) => !m.selfDestruct && !m.deleted && !m.viewOnce);
   const media: Record<string, string> = {};
   for (const m of messages) {
     if (includeMedia && m.mediaFile && (await fileExists(m.mediaFile))) media[m.id] = await readMediaFileBase64(m.mediaFile);

@@ -63,6 +63,40 @@ export function MessageActions({ message, me, styles, onClose, onReply, onEdit, 
   );
 }
 
+type Option = { label: string; selected?: boolean; onPress: () => void };
+
+export function OptionsModal({ visible, title, message, options, styles, onClose }: {
+  visible: boolean;
+  title: string;
+  message?: string;
+  options: Option[];
+  styles: ChatStyles;
+  onClose: () => void;
+}) {
+  return (
+    <Modal transparent visible={visible} animationType="fade" onRequestClose={onClose}>
+      <Pressable style={styles.modalBackdrop} onPress={onClose}>
+        <Pressable style={styles.modalCard}>
+          <Text style={styles.modalTitle}>{title}</Text>
+          {message ? <Text style={styles.modalText}>{message}</Text> : null}
+          {options.map((o) => (
+            <TouchableOpacity
+              key={o.label}
+              style={styles.modalOption}
+              onPress={() => {
+                onClose();
+                o.onPress();
+              }}
+            >
+              <Text style={styles.modalOptionText}>{o.selected ? '●  ' : '○  '}{o.label}</Text>
+            </TouchableOpacity>
+          ))}
+        </Pressable>
+      </Pressable>
+    </Modal>
+  );
+}
+
 type PromptProps = {
   visible: boolean;
   title: string;

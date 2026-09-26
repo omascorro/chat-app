@@ -15,12 +15,14 @@ import {
   loadOrCreateDbKey,
   loadOrCreateIdentity,
   saveAuthSession,
+  wipeAccountKeys,
 } from './keystore';
 import { log } from './log';
+import AsyncStorage from '@react-native-async-storage/async-storage';
 import { SERVER_URL } from './config';
-import { deleteFile, downloadMedia, importPlainFile, MediaAuth, removeFromCache, uploadMedia, wipeCache, withTimeout } from './media';
+import { deleteFile, downloadMedia, importPlainFile, MediaAuth, removeFromCache, uploadMedia, wipeAllMedia, wipeCache, withTimeout } from './media';
 import { migrateLegacyData } from './migrate';
-import { ChatMessage, Contact, MediaKind, Payload } from './types';
+import { ChatMessage, Contact, formatTtl, MediaKind, Payload } from './types';
 
 const PROTOCOL_VERSION = 2;
 export const SELF_DESTRUCT_MS = 10_000;
@@ -30,6 +32,7 @@ const REQUEST_TIMEOUT_MS = 10_000;
 const MAX_UPLOAD_ATTEMPTS = 5;
 const MAX_DOWNLOAD_ATTEMPTS = 3;
 const MAX_TEXT_LENGTH = 20_000;
+const MAX_TTL_SECONDS = 7 * 24 * 60 * 60;
 const HEARTBEAT_MS = 25_000;
 const PING_TIMEOUT_MS = 6_000;
 const ITEM_TIMEOUT_MS = 60_000;
@@ -50,6 +53,7 @@ export type ClientState = {
   openPeer: string | null;
   messages: ChatMessage[];
   cacheEpoch: number; // cambia cuando se borra la carpeta temporal: los visores vuelven a descifrar
+  timers: Record<string, number>; // segundos de los mensajes temporales por conversacion (0 = desactivado)
 };
 
 type ServerUser = { username: string; online: boolean; profilePicture: string | null; identity: PublicIdentity | null };
@@ -80,6 +84,7 @@ const INITIAL_STATE: ClientState = {
   openPeer: null,
   messages: [],
   cacheEpoch: 0,
+  timers: {},
 };
 
 export class ChatClient {
@@ -306,7 +311,25 @@ export class ChatClient {
     this.store = store;
     this.storeReady.resolve(store);
     this.startSweep();
+    await this.loadTimers(store);
     await this.refreshContacts();
+  }
+
+  // Boton de panico: borra todo lo de esta cuenta en este telefono (historial, archivos y llaves) y cierra la sesion.
+  // Al volver a entrar se crea una identidad nueva y el otro vera el aviso de llave cambiada.
+  async panicWipe() {
+    const username = this.state.username;
+    this.send({ type: 'logout' });
+    const store = this.store;
+    this.store = null;
+    if (store) await store.close().catch(() => {});
+    if (username) {
+      await Store.deleteDatabase(username).catch((e) => log('No se pudo borrar la base de datos:', e));
+      await wipeAccountKeys(username);
+      await AsyncStorage.removeItem(`messages_${username}`).catch(() => {});
+    }
+    await wipeAllMedia();
+    await this.resetToLoggedOut('Se borró todo de este teléfono.');
   }
 
   // ---------- autenticacion ----------
@@ -754,6 +777,8 @@ export class ChatClient {
       if (typeof p.id !== 'string' || p.id.length > 64 || !['text', 'image', 'sticker', 'video', 'voice'].includes(p.kind)) return;
       const now = Date.now();
       const sentAt = typeof p.sentAt === 'number' && p.sentAt < now + 5 * 60_000 ? p.sentAt : now;
+      // Versiones anteriores solo mandaban selfDestruct (10 segundos)
+      const ttl = typeof p.ttl === 'number' && p.ttl > 0 && p.ttl <= MAX_TTL_SECONDS ? Math.round(p.ttl) : p.selfDestruct ? SELF_DESTRUCT_MS / 1000 : null;
       await store.insertMessage({
         id: p.id,
         peer: from,
@@ -766,14 +791,28 @@ export class ChatClient {
         duration: typeof p.duration === 'number' ? p.duration : null,
         sentAt,
         status: 'sent',
-        selfDestruct: !!p.selfDestruct,
+        selfDestruct: ttl !== null,
+        ttl,
         expiresAt: null,
         replyTo: typeof p.replyTo === 'string' ? p.replyTo : null,
         editedAt: null,
         deleted: false,
         reactions: {},
         readByMe: false,
+        viewOnce: !!p.viewOnce && p.kind === 'image',
+        viewed: false,
       });
+      return;
+    }
+
+    if (p.t === 'timer') {
+      const seconds = typeof p.seconds === 'number' && p.seconds >= 0 && p.seconds <= MAX_TTL_SECONDS ? Math.round(p.seconds) : null;
+      if (seconds === null) return;
+      await this.saveTimer(store, from, seconds);
+      await this.addSystemMessage(
+        from,
+        seconds > 0 ? `${from} puso los mensajes temporales en ${formatTtl(seconds)}.` : `${from} desactivó los mensajes temporales.`,
+      );
       return;
     }
 
@@ -799,7 +838,50 @@ export class ChatClient {
       if (typeof p.emoji === 'string' && p.emoji.length > 0 && p.emoji.length <= 8) reactions[from] = p.emoji;
       else delete reactions[from];
       await store.setReactions(target.id, reactions);
+    } else if (p.t === 'viewed') {
+      // El otro abrio la foto de "ver una vez": tambien se borra la copia de quien la mando
+      if (target.fromMe && target.viewOnce && !target.viewed) {
+        await deleteFile(target.mediaFile);
+        await removeFromCache(target.id);
+        await store.setViewed(target.id);
+      }
     }
+  }
+
+  // ---------- mensajes temporales ----------
+
+  private async saveTimer(store: Store, peer: string, seconds: number) {
+    await store.setKv(`timer:${peer}`, String(seconds));
+    this.setState({ timers: { ...this.state.timers, [peer]: seconds } });
+  }
+
+  private async loadTimers(store: Store) {
+    const rows = await store.db.getAllAsync<{ key: string; value: string }>("SELECT key, value FROM kv WHERE key LIKE 'timer:%'");
+    const timers: Record<string, number> = {};
+    for (const r of rows) timers[r.key.slice('timer:'.length)] = Number(r.value) || 0;
+    this.setState({ timers });
+  }
+
+  // El ajuste es de la conversacion: se le avisa al otro telefono para que use el mismo
+  async setTimer(peer: string, seconds: number) {
+    const store = this.store;
+    if (!store) return;
+    await this.saveTimer(store, peer, seconds);
+    await this.addSystemMessage(peer, seconds > 0 ? `Pusiste los mensajes temporales en ${formatTtl(seconds)}.` : 'Desactivaste los mensajes temporales.');
+    await this.queuePayload(peer, { t: 'timer', seconds }, true);
+  }
+
+  // ---------- fotos de "ver una vez" ----------
+
+  async markViewOnceViewed(peer: string, id: string) {
+    const store = this.store;
+    const target = store ? await store.getMessage(id) : null;
+    if (!store || !target || target.fromMe || !target.viewOnce || target.viewed) return;
+    await deleteFile(target.mediaFile);
+    await removeFromCache(id);
+    await store.setViewed(id);
+    await this.reloadMessages(peer);
+    await this.queuePayload(peer, { t: 'viewed', id }, true);
   }
 
   private async deleteLocalCopy(store: Store, message: ChatMessage, keepPlaceholder: boolean) {
@@ -814,8 +896,8 @@ export class ChatClient {
     if (!store) return;
     await store.insertMessage({
       id: newMessageId(), peer, fromMe: false, kind: 'system', body, media: null, mediaFile: null, downloadState: 'none',
-      duration: null, sentAt: Date.now(), status: 'sent', selfDestruct: false, expiresAt: null, replyTo: null, editedAt: null,
-      deleted: false, reactions: {}, readByMe: true,
+      duration: null, sentAt: Date.now(), status: 'sent', selfDestruct: false, ttl: null, expiresAt: null, replyTo: null, editedAt: null,
+      deleted: false, reactions: {}, readByMe: true, viewOnce: false, viewed: false,
     });
     await this.reloadMessages(peer);
   }
@@ -862,13 +944,14 @@ export class ChatClient {
 
   // ---------- envio ----------
 
+  // Usa el temporizador que tenga la conversacion en ese momento
   private newOutgoing(peer: string, kind: ChatMessage['kind'], body: string, extra: Partial<ChatMessage> = {}): ChatMessage {
     const now = Date.now();
-    const selfDestruct = !!extra.selfDestruct;
+    const ttl = this.state.timers[peer] || 0;
     return {
       id: newMessageId(), peer, fromMe: true, kind, body, media: null, mediaFile: null, downloadState: 'none', duration: null,
-      sentAt: now, status: 'pending', selfDestruct, expiresAt: selfDestruct ? now + SELF_DESTRUCT_MS : null, replyTo: null,
-      editedAt: null, deleted: false, reactions: {}, readByMe: true, ...extra,
+      sentAt: now, status: 'pending', selfDestruct: ttl > 0, ttl: ttl > 0 ? ttl : null, expiresAt: ttl > 0 ? now + ttl * 1000 : null,
+      replyTo: null, editedAt: null, deleted: false, reactions: {}, readByMe: true, viewOnce: false, viewed: false, ...extra,
     };
   }
 
@@ -882,6 +965,8 @@ export class ChatClient {
       duration: m.duration ?? undefined,
       sentAt: m.sentAt,
       selfDestruct: m.selfDestruct || undefined,
+      ttl: m.ttl ?? undefined,
+      viewOnce: m.viewOnce || undefined,
       replyTo: m.replyTo ?? undefined,
     };
   }
@@ -902,21 +987,21 @@ export class ChatClient {
     this.flush();
   }
 
-  async sendText(peer: string, text: string, options: { replyTo?: string | null; selfDestruct?: boolean } = {}) {
+  async sendText(peer: string, text: string, options: { replyTo?: string | null } = {}) {
     const body = text.slice(0, MAX_TEXT_LENGTH);
     if (!body.trim()) return;
-    await this.queueOutgoing(this.newOutgoing(peer, 'text', body, { replyTo: options.replyTo ?? null, selfDestruct: !!options.selfDestruct }));
+    await this.queueOutgoing(this.newOutgoing(peer, 'text', body, { replyTo: options.replyTo ?? null }));
   }
 
-  async sendSticker(peer: string, emoji: string, options: { selfDestruct?: boolean } = {}) {
-    await this.queueOutgoing(this.newOutgoing(peer, 'sticker', emoji, { selfDestruct: !!options.selfDestruct }));
+  async sendSticker(peer: string, emoji: string) {
+    await this.queueOutgoing(this.newOutgoing(peer, 'sticker', emoji));
   }
 
-  async sendMedia(peer: string, plainUri: string, kind: MediaKind, options: { duration?: number; replyTo?: string | null; selfDestruct?: boolean } = {}) {
+  async sendMedia(peer: string, plainUri: string, kind: MediaKind, options: { duration?: number; replyTo?: string | null; viewOnce?: boolean } = {}) {
     const message = this.newOutgoing(peer, kind, '', {
       duration: options.duration ?? null,
       replyTo: options.replyTo ?? null,
-      selfDestruct: !!options.selfDestruct,
+      viewOnce: !!options.viewOnce && kind === 'image',
     });
     const { media, mediaFile } = await importPlainFile(message.id, plainUri, kind, true);
     await this.queueOutgoing({ ...message, media, mediaFile, downloadState: 'done' });
@@ -1168,6 +1253,11 @@ export class ChatClient {
     if (payload.t === 'msg') {
       const message = await store.getMessage(payload.id);
       if (message && message.status === 'pending') await store.setStatus(payload.id, result === 'accepted' ? 'sent' : 'failed');
+      // Una foto de "ver una vez" ya salio: quien la mando tampoco se queda con copia
+      if (message && result === 'accepted' && message.viewOnce) {
+        await deleteFile(message.mediaFile);
+        await store.setMedia(message.id, null, null, 'none');
+      }
       await this.reloadMessages(item.peer);
     }
     return 'done';

@@ -11,6 +11,7 @@ function formatTime(ts: number) {
 export function describeMessage(m: ChatMessage | null): string {
   if (!m) return 'Mensaje no disponible';
   if (m.deleted) return 'Mensaje eliminado';
+  if (m.viewOnce) return '📷 Foto de ver una vez';
   switch (m.kind) {
     case 'image':
       return '📷 Foto';
@@ -34,9 +35,29 @@ type Props = {
   onZoom: (uri: string) => void;
   onRetrySend: (id: string) => void;
   onRetryDownload: (id: string) => void;
+  onOpenViewOnce: (m: ChatMessage) => void;
 };
 
-export function MessageBubble({ message: item, quoted, me, peer, epoch, styles, onLongPress, onZoom, onRetrySend, onRetryDownload }: Props) {
+function ViewOnceContent({ item, styles, onOpen, onRetryDownload }: { item: ChatMessage; styles: ChatStyles; onOpen: (m: ChatMessage) => void; onRetryDownload: (id: string) => void }) {
+  const textStyle = item.fromMe ? styles.myText : styles.theirText;
+  if (item.viewed) return <Text style={textStyle}>📷 Foto de ver una vez · {item.fromMe ? 'abierta' : 'ya la viste'}</Text>;
+  if (item.fromMe) return <Text style={textStyle}>📷 Foto de ver una vez</Text>;
+  if (item.downloadState === 'failed') {
+    return (
+      <TouchableOpacity onPress={() => onRetryDownload(item.id)}>
+        <Text style={textStyle}>📷 Foto de ver una vez{'\n'}⚠ No se pudo descargar · toca para reintentar</Text>
+      </TouchableOpacity>
+    );
+  }
+  if (item.downloadState !== 'done') return <Text style={textStyle}>📷 Foto de ver una vez · descargando…</Text>;
+  return (
+    <TouchableOpacity onPress={() => onOpen(item)} activeOpacity={0.7}>
+      <Text style={textStyle}>📷 Foto de ver una vez{'\n'}Toca para abrir. Se borra al cerrarla.</Text>
+    </TouchableOpacity>
+  );
+}
+
+export function MessageBubble({ message: item, quoted, me, peer, epoch, styles, onLongPress, onZoom, onRetrySend, onRetryDownload, onOpenViewOnce }: Props) {
   if (item.kind === 'system') {
     return (
       <View style={styles.systemRow}>
@@ -46,13 +67,15 @@ export function MessageBubble({ message: item, quoted, me, peer, epoch, styles, 
   }
 
   const mine = item.fromMe;
-  const isMedia = !item.deleted && (item.kind === 'image' || item.kind === 'video');
+  const isMedia = !item.deleted && !item.viewOnce && (item.kind === 'image' || item.kind === 'video');
   const reactions = Object.values(item.reactions);
   const mediaProps = { message: item, epoch, styles, onRetryDownload };
 
   let content;
   if (item.deleted) {
     content = <Text style={styles.deletedText}>🚫 Mensaje eliminado</Text>;
+  } else if (item.viewOnce) {
+    content = <ViewOnceContent item={item} styles={styles} onOpen={onOpenViewOnce} onRetryDownload={onRetryDownload} />;
   } else if (item.kind === 'image') {
     content = <EncryptedImage {...mediaProps} onZoom={onZoom} />;
   } else if (item.kind === 'video') {

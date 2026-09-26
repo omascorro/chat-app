@@ -77,6 +77,14 @@ export async function setAppLockEnabled(enabled: boolean) {
   await SecureStore.setItemAsync('app_lock', enabled ? 'on' : 'off', OPTIONS);
 }
 
+// Boton de panico: borra la identidad, las prekeys, la llave de la base de datos y la sesion de este usuario
+export async function wipeAccountKeys(username: string) {
+  const u = userKey(username);
+  for (const key of [`id2_${u}`, `spk_${u}`, `dbkey_${u}`, 'auth_session']) {
+    await SecureStore.deleteItemAsync(key, OPTIONS).catch(() => {});
+  }
+}
+
 // Llaves del protocolo viejo (v1), para borrarlas despues de migrar
 export async function deleteLegacyKeys(username: string, peers: string[]) {
   const keys = [`identity_${username}`, ...peers.map((p) => `ratchet_${username}_${p}`)];
