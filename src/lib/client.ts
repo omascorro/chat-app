@@ -17,11 +17,11 @@ import {
   saveAuthSession,
 } from './keystore';
 import { log } from './log';
-import { deleteFile, downloadMedia, importPlainFile, removeFromCache, uploadMedia, wipeCache, withTimeout } from './media';
+import { SERVER_URL } from './config';
+import { deleteFile, downloadMedia, importPlainFile, MediaAuth, removeFromCache, uploadMedia, wipeCache, withTimeout } from './media';
 import { migrateLegacyData } from './migrate';
 import { ChatMessage, Contact, MediaKind, Payload } from './types';
 
-const SERVER_URL = 'wss://chat-backend-p5ny.onrender.com';
 const PROTOCOL_VERSION = 2;
 export const SELF_DESTRUCT_MS = 10_000;
 export const PASSWORD_MIN_LENGTH = 8;
@@ -821,7 +821,9 @@ export class ChatClient {
       for (const m of await store.pendingDownloads()) {
         if (!m.media) continue;
         try {
-          const mediaFile = await downloadMedia(m.id, m.media);
+          const auth = this.mediaAuth();
+          if (!auth) break;
+          const mediaFile = await downloadMedia(m.id, m.media, auth);
           await store.setMedia(m.id, m.media, mediaFile, 'done');
           // Ya lo tenemos: el servidor puede borrar la copia de Supabase
           if (m.media.path) this.send({ type: 'media-done', bucket: m.media.bucket, path: m.media.path });
@@ -1039,6 +1041,10 @@ export class ChatClient {
     this.runUploads();
   }
 
+  private mediaAuth(): MediaAuth | null {
+    return this.token && this.state.username ? { username: this.state.username, token: this.token } : null;
+  }
+
   private needsUpload(item: OutboxItem): boolean {
     try {
       const payload = JSON.parse(item.payload) as Payload;
@@ -1066,7 +1072,9 @@ export class ChatClient {
           continue;
         }
         try {
-          payload.media = await uploadMedia(message.mediaFile, payload.media);
+          const auth = this.mediaAuth();
+          if (!auth) break;
+          payload.media = await uploadMedia(message.mediaFile, payload.media, auth);
           await store.updateOutbox(item.id, JSON.stringify(payload), item.attempts);
           await store.setMedia(message.id, payload.media, message.mediaFile, 'done');
           uploadedSomething = true;

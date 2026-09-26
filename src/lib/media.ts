@@ -1,11 +1,21 @@
 // Cada archivo se cifra con su propia llave (como los adjuntos de Signal). La llave viaja dentro del mensaje cifrado,
-// asi que Supabase solo guarda bytes ilegibles. En el telefono se guarda la misma copia cifrada y solo se descifra
-// a una carpeta temporal mientras se ve; esa carpeta se borra al salir de la app.
+// asi que el servidor y Supabase solo guardan bytes ilegibles. En el telefono se guarda la misma copia cifrada y solo
+// se descifra a una carpeta temporal mientras se ve; esa carpeta se borra al salir de la app.
 import * as FileSystem from 'expo-file-system/legacy';
 import nacl from 'tweetnacl';
+import { SERVER_HTTP_URL } from './config';
 import { fromB64, randomHex, toB64 } from './crypto/primitives';
-import { supabase } from './supabase';
 import { MediaKind, MediaRef } from './types';
+
+export type MediaAuth = { username: string; token: string };
+
+function authHeaders(auth: MediaAuth): Record<string, string> {
+  return { Authorization: `Bearer ${auth.token}`, 'X-Username': auth.username };
+}
+
+function mediaUrl(media: MediaRef, path: string): string {
+  return `${SERVER_HTTP_URL}/media/${media.bucket}/${path}`;
+}
 
 const MEDIA_DIR = `${FileSystem.documentDirectory}media/`;
 const CACHE_DIR = `${FileSystem.cacheDirectory}mc/`;
@@ -67,41 +77,43 @@ export async function deleteIfAppFile(uri: string) {
   if (isAppFile) await deleteFile(uri);
 }
 
-// Sube la copia cifrada con un nombre aleatorio que no dice nada del mensaje
-export async function uploadMedia(mediaFile: string, media: MediaRef): Promise<MediaRef> {
-  const cipher = await readBytes(mediaFile);
+// Sube la copia cifrada, con un nombre aleatorio que no dice nada del mensaje. El sistema del telefono la manda
+// directo desde el archivo (sin cargarla entera en memoria).
+export async function uploadMedia(mediaFile: string, media: MediaRef, auth: MediaAuth): Promise<MediaRef> {
   const path = `${randomHex(16)}.bin`;
-  const { error } = await withTimeout(
-    supabase.storage
-      .from(media.bucket)
-      .upload(path, cipher.buffer.slice(cipher.byteOffset, cipher.byteOffset + cipher.byteLength) as ArrayBuffer, {
-        contentType: 'application/octet-stream',
-      }),
+  const result = await withTimeout(
+    FileSystem.uploadAsync(mediaUrl(media, path), mediaFile, {
+      httpMethod: 'PUT',
+      uploadType: FileSystem.FileSystemUploadType.BINARY_CONTENT,
+      headers: { ...authHeaders(auth), 'Content-Type': 'application/octet-stream' },
+    }),
     UPLOAD_TIMEOUT_MS,
     'La subida del archivo tardó demasiado',
   );
-  if (error) throw new Error(`Supabase: ${error.message}`);
-  const { data } = supabase.storage.from(media.bucket).getPublicUrl(path);
-  return { ...media, path, url: data.publicUrl };
+  if (result.status !== 200) throw new Error(`El servidor rechazó el archivo (HTTP ${result.status}${result.body ? ': ' + result.body.slice(0, 80) : ''})`);
+  return { bucket: media.bucket, key: media.key, nonce: media.nonce, path };
 }
 
 // Descarga el archivo cifrado, comprueba que descifra bien y lo guarda tal cual (cifrado)
-export async function downloadMedia(messageId: string, media: MediaRef): Promise<string> {
-  if (!media.url) throw new Error('El mensaje no trae la direccion del archivo');
-  const url = media.url;
-  const cipher = await withTimeout(
-    (async () => {
-      const resp = await fetch(url);
-      if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
-      return new Uint8Array(await resp.arrayBuffer());
-    })(),
+export async function downloadMedia(messageId: string, media: MediaRef, auth: MediaAuth): Promise<string> {
+  // Los mensajes de antes de este cambio solo traen la URL publica de Supabase; el nombre del archivo es lo ultimo
+  const path = media.path ?? media.url?.split('/').pop();
+  if (!path) throw new Error('El mensaje no trae la direccion del archivo');
+  await ensureDir(MEDIA_DIR);
+  const mediaFile = `${MEDIA_DIR}${messageId}.enc`;
+  const result = await withTimeout(
+    FileSystem.downloadAsync(mediaUrl(media, path), mediaFile, { headers: authHeaders(auth) }),
     DOWNLOAD_TIMEOUT_MS,
     'La descarga del archivo tardó demasiado',
   );
-  if (!nacl.secretbox.open(cipher, fromB64(media.nonce), fromB64(media.key))) throw new Error('El archivo no se pudo descifrar');
-  await ensureDir(MEDIA_DIR);
-  const mediaFile = `${MEDIA_DIR}${messageId}.enc`;
-  await writeBytes(mediaFile, cipher);
+  if (result.status !== 200) {
+    await deleteFile(mediaFile);
+    throw new Error(`No se pudo descargar el archivo (HTTP ${result.status})`);
+  }
+  if (!nacl.secretbox.open(await readBytes(mediaFile), fromB64(media.nonce), fromB64(media.key))) {
+    await deleteFile(mediaFile);
+    throw new Error('El archivo no se pudo descifrar');
+  }
   return mediaFile;
 }
 
