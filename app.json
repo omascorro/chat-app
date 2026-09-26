@@ -1,4 +1,4 @@
-﻿{
+{
   "expo": {
     "name": "Aeterna",
     "slug": "chat-app",
@@ -11,7 +11,8 @@
       "icon": "./assets/images/icon.png",
       "bundleIdentifier": "com.mascorro55.chatapp",
       "infoPlist": {
-        "ITSAppUsesNonExemptEncryption": false
+        "ITSAppUsesNonExemptEncryption": false,
+        "NSFaceIDUsageDescription": "Permite desbloquear la app con Face ID para proteger tus mensajes."
       }
     },
     "android": {
@@ -46,6 +47,19 @@
         "expo-audio",
         {
           "microphonePermission": "Permite grabar notas de voz para enviarlas a tus contactos."
+        }
+      ],
+      [
+        "expo-sqlite",
+        {
+          "useSQLCipher": true
+        }
+      ],
+      "expo-sharing",
+      [
+        "expo-local-authentication",
+        {
+          "faceIDPermission": "Permite desbloquear la app con Face ID para proteger tus mensajes."
         }
       ]
     ],
