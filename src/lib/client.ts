@@ -168,7 +168,10 @@ export class ChatClient {
     if (next === 'background') {
       // Lo descifrado para verse no se queda en disco mientras la app no esta en uso
       wipeCache().catch(() => {});
+      // Asi el servidor manda notificacion aunque la conexion siga viva un rato con el telefono bloqueado
+      this.sendPresence();
     }
+    if (next === 'active' && previous !== 'active') this.sendPresence();
     if (/inactive|background/.test(previous) && next === 'active') {
       this.setState({ cacheEpoch: this.state.cacheEpoch + 1 });
       // En iPhone la app pasa por "inactive" muy seguido (Face ID, selector de fotos, centro de notificaciones).
@@ -364,8 +367,15 @@ export class ChatClient {
     this.setState({ recoveryCode: null, phase: 'ready' });
   }
 
+  // "inactive" (Face ID, centro de notificaciones) no cuenta: solo primer plano o segundo plano
+  private sendPresence() {
+    if (!this.authed) return;
+    this.send({ type: 'presence', state: this.appState === 'background' ? 'background' : 'active' });
+  }
+
   private onAuthenticated() {
     this.authed = true;
+    this.sendPresence();
     if (this.spkNeedsPublish && this.spks.length > 0) {
       const spk = this.spks[this.spks.length - 1];
       this.send({ type: 'publish-spk', spk: { id: spk.id, pub: spk.pub, sig: spk.sig } });
