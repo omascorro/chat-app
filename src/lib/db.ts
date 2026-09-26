@@ -43,7 +43,8 @@ CREATE TABLE IF NOT EXISTS outbox (
   payload TEXT NOT NULL,
   silent INTEGER NOT NULL DEFAULT 0,
   created_at INTEGER NOT NULL,
-  attempts INTEGER NOT NULL DEFAULT 0
+  attempts INTEGER NOT NULL DEFAULT 0,
+  last_error TEXT
 );
 CREATE TABLE IF NOT EXISTS seen_inbox (id TEXT PRIMARY KEY, at INTEGER NOT NULL);
 CREATE TABLE IF NOT EXISTS kv (key TEXT PRIMARY KEY, value TEXT NOT NULL);
@@ -99,7 +100,7 @@ export type ContactKeys = {
   verified: boolean;
 };
 
-export type OutboxItem = { id: string; peer: string; payload: string; silent: boolean; createdAt: number; attempts: number };
+export type OutboxItem = { id: string; peer: string; payload: string; silent: boolean; createdAt: number; attempts: number; lastError: string | null };
 
 export class Store {
   private constructor(readonly db: SQLite.SQLiteDatabase) {}
@@ -110,6 +111,9 @@ export class Store {
     // Con SQLCipher la llave tiene que ser lo primero que se ejecuta
     await db.execAsync(`PRAGMA key = '${keyHex}'`);
     await db.execAsync(SCHEMA);
+    // Bases creadas por la primera version v2 no tienen last_error
+    const outboxColumns = await db.getAllAsync<{ name: string }>('PRAGMA table_info(outbox)');
+    if (!outboxColumns.some((c) => c.name === 'last_error')) await db.execAsync('ALTER TABLE outbox ADD COLUMN last_error TEXT');
     return new Store(db);
   }
 
@@ -252,7 +256,7 @@ export class Store {
 
   // ---- cola de salida ----
 
-  async addOutbox(item: Omit<OutboxItem, 'attempts'>) {
+  async addOutbox(item: Omit<OutboxItem, 'attempts' | 'lastError'>) {
     await this.db.runAsync(
       'INSERT OR REPLACE INTO outbox (id, peer, payload, silent, created_at, attempts) VALUES (?, ?, ?, ?, ?, 0)',
       item.id, item.peer, item.payload, item.silent ? 1 : 0, item.createdAt,
@@ -260,14 +264,20 @@ export class Store {
   }
 
   async listOutbox(): Promise<OutboxItem[]> {
-    const rows = await this.db.getAllAsync<{ id: string; peer: string; payload: string; silent: number; created_at: number; attempts: number }>(
+    const rows = await this.db.getAllAsync<{ id: string; peer: string; payload: string; silent: number; created_at: number; attempts: number; last_error: string | null }>(
       'SELECT * FROM outbox ORDER BY created_at ASC, rowid ASC',
     );
-    return rows.map((r) => ({ id: r.id, peer: r.peer, payload: r.payload, silent: r.silent === 1, createdAt: r.created_at, attempts: r.attempts }));
+    return rows.map((r) => ({
+      id: r.id, peer: r.peer, payload: r.payload, silent: r.silent === 1, createdAt: r.created_at, attempts: r.attempts, lastError: r.last_error,
+    }));
   }
 
   async updateOutbox(id: string, payload: string, attempts: number) {
-    await this.db.runAsync('UPDATE outbox SET payload = ?, attempts = ? WHERE id = ?', payload, attempts, id);
+    await this.db.runAsync('UPDATE outbox SET payload = ?, attempts = ?, last_error = NULL WHERE id = ?', payload, attempts, id);
+  }
+
+  async setOutboxError(id: string, attempts: number, error: string) {
+    await this.db.runAsync('UPDATE outbox SET attempts = ?, last_error = ? WHERE id = ?', attempts, error.slice(0, 300), id);
   }
 
   async deleteOutbox(id: string) {

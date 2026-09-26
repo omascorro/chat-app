@@ -11,6 +11,17 @@ const MEDIA_DIR = `${FileSystem.documentDirectory}media/`;
 const CACHE_DIR = `${FileSystem.cacheDirectory}mc/`;
 
 const EXTENSIONS: Record<MediaKind, string> = { image: 'jpg', video: 'mp4', voice: 'm4a' };
+const UPLOAD_TIMEOUT_MS = 90_000;
+const DOWNLOAD_TIMEOUT_MS = 120_000;
+
+// fetch no tiene limite de tiempo: sin esto una subida colgada detenia la app para siempre
+export function withTimeout<T>(promise: Promise<T>, ms: number, message: string): Promise<T> {
+  let timer: ReturnType<typeof setTimeout>;
+  const timeout = new Promise<never>((_, reject) => {
+    timer = setTimeout(() => reject(new Error(message)), ms);
+  });
+  return Promise.race([promise, timeout]).finally(() => clearTimeout(timer));
+}
 
 async function ensureDir(dir: string) {
   const info = await FileSystem.getInfoAsync(dir);
@@ -60,12 +71,16 @@ export async function deleteIfAppFile(uri: string) {
 export async function uploadMedia(mediaFile: string, media: MediaRef): Promise<MediaRef> {
   const cipher = await readBytes(mediaFile);
   const path = `${randomHex(16)}.bin`;
-  const { error } = await supabase.storage
-    .from(media.bucket)
-    .upload(path, cipher.buffer.slice(cipher.byteOffset, cipher.byteOffset + cipher.byteLength) as ArrayBuffer, {
-      contentType: 'application/octet-stream',
-    });
-  if (error) throw new Error(error.message);
+  const { error } = await withTimeout(
+    supabase.storage
+      .from(media.bucket)
+      .upload(path, cipher.buffer.slice(cipher.byteOffset, cipher.byteOffset + cipher.byteLength) as ArrayBuffer, {
+        contentType: 'application/octet-stream',
+      }),
+    UPLOAD_TIMEOUT_MS,
+    'La subida del archivo tardó demasiado',
+  );
+  if (error) throw new Error(`Supabase: ${error.message}`);
   const { data } = supabase.storage.from(media.bucket).getPublicUrl(path);
   return { ...media, path, url: data.publicUrl };
 }
@@ -73,9 +88,16 @@ export async function uploadMedia(mediaFile: string, media: MediaRef): Promise<M
 // Descarga el archivo cifrado, comprueba que descifra bien y lo guarda tal cual (cifrado)
 export async function downloadMedia(messageId: string, media: MediaRef): Promise<string> {
   if (!media.url) throw new Error('El mensaje no trae la direccion del archivo');
-  const resp = await fetch(media.url);
-  if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
-  const cipher = new Uint8Array(await resp.arrayBuffer());
+  const url = media.url;
+  const cipher = await withTimeout(
+    (async () => {
+      const resp = await fetch(url);
+      if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
+      return new Uint8Array(await resp.arrayBuffer());
+    })(),
+    DOWNLOAD_TIMEOUT_MS,
+    'La descarga del archivo tardó demasiado',
+  );
   if (!nacl.secretbox.open(cipher, fromB64(media.nonce), fromB64(media.key))) throw new Error('El archivo no se pudo descifrar');
   await ensureDir(MEDIA_DIR);
   const mediaFile = `${MEDIA_DIR}${messageId}.enc`;

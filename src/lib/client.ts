@@ -17,7 +17,7 @@ import {
   saveAuthSession,
 } from './keystore';
 import { log } from './log';
-import { deleteFile, downloadMedia, importPlainFile, removeFromCache, uploadMedia, wipeCache } from './media';
+import { deleteFile, downloadMedia, importPlainFile, removeFromCache, uploadMedia, wipeCache, withTimeout } from './media';
 import { migrateLegacyData } from './migrate';
 import { ChatMessage, Contact, MediaKind, Payload } from './types';
 
@@ -30,6 +30,9 @@ const REQUEST_TIMEOUT_MS = 10_000;
 const MAX_UPLOAD_ATTEMPTS = 5;
 const MAX_DOWNLOAD_ATTEMPTS = 3;
 const MAX_TEXT_LENGTH = 20_000;
+const HEARTBEAT_MS = 25_000;
+const PING_TIMEOUT_MS = 6_000;
+const ITEM_TIMEOUT_MS = 60_000;
 
 export type Phase = 'booting' | 'loggedOut' | 'recovery' | 'ready';
 
@@ -103,6 +106,8 @@ export class ChatClient {
   private flushing = false;
   private flushAgain = false;
   private flushRetryTimer: ReturnType<typeof setTimeout> | null = null;
+  private pingWaiters = new Map<string, () => void>();
+  private uploading = false;
   private downloading = false;
   private downloadAttempts = new Map<string, number>();
   private sweepTimer: ReturnType<typeof setInterval> | null = null;
@@ -150,6 +155,11 @@ export class ChatClient {
       this.setState({ phase: 'loggedOut' });
     }
     this.connect();
+
+    // Mientras la app esta abierta se revisa cada 25 s que la conexion siga viva
+    setInterval(() => {
+      if (this.appState === 'active') this.checkConnection();
+    }, HEARTBEAT_MS);
   }
 
   private onAppStateChange(next: AppStateStatus) {
@@ -161,10 +171,51 @@ export class ChatClient {
     }
     if (/inactive|background/.test(previous) && next === 'active') {
       this.setState({ cacheEpoch: this.state.cacheEpoch + 1 });
-      // La conexion anterior puede estar muerta sin avisar; se abre una nueva
-      this.connect();
+      // En iPhone la app pasa por "inactive" muy seguido (Face ID, selector de fotos, centro de notificaciones).
+      // Reconectar cada vez perdia las confirmaciones del servidor; ahora solo se reconecta si la conexion no responde.
+      this.checkConnection();
       if (this.state.openPeer) this.markConversationRead(this.state.openPeer);
     }
+  }
+
+  private checkingConnection = false;
+  private async checkConnection() {
+    if (this.checkingConnection) return;
+    if (!this.ws || this.ws.readyState !== WebSocket.OPEN) {
+      if (!this.ws || this.ws.readyState !== WebSocket.CONNECTING) this.connect();
+      return;
+    }
+    this.checkingConnection = true;
+    try {
+      if (!(await this.ping(PING_TIMEOUT_MS))) {
+        log('La conexion no respondio, se abre una nueva');
+        this.connect();
+      } else if (this.authed) {
+        this.flush();
+        this.runUploads();
+      }
+    } finally {
+      this.checkingConnection = false;
+    }
+  }
+
+  private ping(ms: number): Promise<boolean> {
+    const id = newMessageId();
+    return new Promise((resolve) => {
+      const timer = setTimeout(() => {
+        this.pingWaiters.delete(id);
+        resolve(false);
+      }, ms);
+      this.pingWaiters.set(id, () => {
+        clearTimeout(timer);
+        resolve(true);
+      });
+      if (!this.send({ type: 'ping', id })) {
+        clearTimeout(timer);
+        this.pingWaiters.delete(id);
+        resolve(false);
+      }
+    });
   }
 
   private connect() {
@@ -177,7 +228,15 @@ export class ChatClient {
     this.ws = socket;
     if (old) {
       old.onclose = null;
-      old.onmessage = null;
+      // Una confirmacion que ya venia en camino por la conexion vieja todavia cuenta
+      old.onmessage = (event) => {
+        try {
+          const data = JSON.parse(event.data);
+          if (data.type === 'accepted' || data.type === 'rejected') this.handleServerMessage(data);
+        } catch {
+          // ignorado
+        }
+      };
       old.close();
     }
     this.authed = false;
@@ -314,6 +373,7 @@ export class ChatClient {
     }
     if (!this.pushRegistered) this.registerForPushNotifications();
     this.flush();
+    this.runUploads();
     this.runDownloads();
   }
 
@@ -409,6 +469,14 @@ export class ChatClient {
       case 'message':
         this.enqueueInbound(() => this.processInbound(String(data.id), data.from, data.envelope));
         return;
+      case 'pong': {
+        const waiter = this.pingWaiters.get(data.id);
+        if (waiter) {
+          this.pingWaiters.delete(data.id);
+          waiter();
+        }
+        return;
+      }
       case 'accepted':
       case 'rejected': {
         const waiter = this.sendWaiters.get(data.clientId);
@@ -907,10 +975,22 @@ export class ChatClient {
         const store = this.store;
         if (!store || !this.authed) break;
         const blocked = new Set<string>();
+        let waitingUpload = false;
         for (const item of await store.listOutbox()) {
           if (!this.authed || this.store !== store) break;
           if (blocked.has(item.peer)) continue;
-          const result = await this.sendOutboxItem(store, item);
+          // Un archivo que todavia se esta subiendo no detiene a los textos que vienen detras
+          if (this.needsUpload(item)) {
+            waitingUpload = true;
+            continue;
+          }
+          let result: ItemResult;
+          try {
+            result = await withTimeout(this.sendOutboxItem(store, item), ITEM_TIMEOUT_MS, 'Se agotó el tiempo al enviar');
+          } catch (e) {
+            await store.setOutboxError(item.id, item.attempts + 1, String((e as Error)?.message ?? e));
+            result = 'retry';
+          }
           if (result === 'blocked') blocked.add(item.peer);
           if (result === 'retry') {
             retryLater = true;
@@ -918,6 +998,7 @@ export class ChatClient {
           }
         }
         if (blocked.size > 0) retryLater = true;
+        if (waitingUpload) this.runUploads();
       } while (this.flushAgain && !retryLater);
     } catch (e) {
       log('Error enviando la cola de salida:', e);
@@ -925,54 +1006,121 @@ export class ChatClient {
     } finally {
       this.flushing = false;
     }
-    if (retryLater && !this.flushRetryTimer) {
-      this.flushRetryTimer = setTimeout(() => {
-        this.flushRetryTimer = null;
-        this.flush();
-      }, 15_000);
+    if (retryLater) this.scheduleRetry();
+  }
+
+  // ---------- diagnostico ----------
+
+  async getDiagnostics() {
+    const store = this.store;
+    const outbox = store ? await store.listOutbox() : [];
+    return {
+      connected: this.state.connected,
+      authed: this.authed,
+      lastUploadError: store ? await store.getKv('last_upload_error') : null,
+      outbox: outbox.map((item) => {
+        let what = 'mensaje';
+        try {
+          const p = JSON.parse(item.payload) as Payload;
+          what = p.t === 'msg' ? (p.media ? `${p.kind}${p.media.path ? ' (ya subido)' : ' (sin subir)'}` : p.kind) : p.t;
+        } catch {
+          // payload ilegible
+        }
+        return { id: item.id, peer: item.peer, what, attempts: item.attempts, lastError: item.lastError, ageSeconds: Math.round((Date.now() - item.createdAt) / 1000) };
+      }),
+    };
+  }
+
+  retryNow() {
+    if (this.flushRetryTimer) clearTimeout(this.flushRetryTimer);
+    this.flushRetryTimer = null;
+    this.checkConnection();
+    this.flush();
+    this.runUploads();
+  }
+
+  private needsUpload(item: OutboxItem): boolean {
+    try {
+      const payload = JSON.parse(item.payload) as Payload;
+      return payload.t === 'msg' && !!payload.media && !payload.media.path;
+    } catch {
+      return false;
     }
+  }
+
+  // Sube los archivos pendientes, uno a la vez y aparte de la cola de mensajes.
+  // Cuando uno termina, su mensaje ya puede salir en el siguiente envio de la cola.
+  private async runUploads() {
+    if (this.uploading) return;
+    const store = this.store;
+    if (!store || !this.authed) return;
+    this.uploading = true;
+    let uploadedSomething = false;
+    try {
+      for (const item of await store.listOutbox()) {
+        if (!this.needsUpload(item) || this.store !== store) continue;
+        const payload = JSON.parse(item.payload) as Extract<Payload, { t: 'msg' }>;
+        const message = await store.getMessage(payload.id);
+        if (!message || !message.mediaFile || message.deleted || !payload.media) {
+          await store.deleteOutbox(item.id);
+          continue;
+        }
+        try {
+          payload.media = await uploadMedia(message.mediaFile, payload.media);
+          await store.updateOutbox(item.id, JSON.stringify(payload), item.attempts);
+          await store.setMedia(message.id, payload.media, message.mediaFile, 'done');
+          uploadedSomething = true;
+        } catch (e) {
+          const error = String((e as Error)?.message ?? e);
+          log('Error subiendo un archivo:', error);
+          const attempts = item.attempts + 1;
+          if (attempts >= MAX_UPLOAD_ATTEMPTS) {
+            await store.deleteOutbox(item.id);
+            await store.setStatus(payload.id, 'failed');
+            await store.setKv('last_upload_error', error);
+            await this.reloadMessages(item.peer);
+          } else {
+            await store.setOutboxError(item.id, attempts, error);
+            this.scheduleRetry();
+          }
+        }
+      }
+    } finally {
+      this.uploading = false;
+    }
+    if (uploadedSomething) this.flush();
+  }
+
+  private scheduleRetry() {
+    if (this.flushRetryTimer) return;
+    this.flushRetryTimer = setTimeout(() => {
+      this.flushRetryTimer = null;
+      this.flush();
+      this.runUploads();
+    }, 15_000);
   }
 
   private async sendOutboxItem(store: Store, item: OutboxItem): Promise<ItemResult> {
     const payload = JSON.parse(item.payload) as Payload;
 
-    // 1. Subir el archivo (una sola vez; la ruta queda guardada en la cola)
-    if (payload.t === 'msg' && payload.media && !payload.media.path) {
-      const message = await store.getMessage(payload.id);
-      if (!message || !message.mediaFile || message.deleted) {
-        await store.deleteOutbox(item.id);
-        return 'done';
-      }
-      try {
-        payload.media = await uploadMedia(message.mediaFile, payload.media);
-        await store.updateOutbox(item.id, JSON.stringify(payload), item.attempts);
-        await store.setMedia(message.id, payload.media, message.mediaFile, 'done');
-      } catch (e) {
-        log('Error subiendo un archivo:', e);
-        const attempts = item.attempts + 1;
-        if (attempts >= MAX_UPLOAD_ATTEMPTS) {
-          await store.deleteOutbox(item.id);
-          await store.setStatus(payload.id, 'failed');
-          await this.reloadMessages(item.peer);
-          return 'done';
-        }
-        await store.updateOutbox(item.id, item.payload, attempts);
-        return 'retry';
-      }
-    }
-
-    // 2. Cifrar con la sesion del contacto (o crearla con X3DH)
+    // Cifrar con la sesion del contacto (o crearla con X3DH)
     const identity = this.identity;
     if (!identity) return 'retry';
     const keys = await store.getContactKeys(item.peer);
-    if (keys.pinned && keys.seen && !sameIdentity(keys.pinned, keys.seen)) return 'blocked';
+    if (keys.pinned && keys.seen && !sameIdentity(keys.pinned, keys.seen)) {
+      await store.setOutboxError(item.id, item.attempts, 'La llave de seguridad del contacto cambió; acéptala para enviar');
+      return 'blocked';
+    }
 
     const encrypted = await this.withLock(item.peer, async (): Promise<Envelope | 'blocked'> => {
       let record = await store.getSessions(item.peer);
       if (!canEncrypt(record)) {
         const res = await this.request({ type: 'get-bundle', username: item.peer });
         const bundle: Bundle | null = res?.bundle ?? null;
-        if (!bundle || !verifyBundle(bundle)) return 'blocked';
+        if (!bundle || !verifyBundle(bundle)) {
+          await store.setOutboxError(item.id, item.attempts, res ? 'El contacto todavía no instala la versión nueva de la app' : 'El servidor no respondió al pedir las llaves');
+          return 'blocked';
+        }
         const current = await store.getContactKeys(item.peer);
         if (!current.pinned) {
           await store.saveContactKeys(item.peer, { pinned: bundle.identity, seen: bundle.identity, verified: false });
@@ -994,7 +1142,10 @@ export class ChatClient {
 
     // 3. Mandar y esperar la confirmacion del servidor
     const result = await this.sendAndWait(item.id, { type: 'direct-message', to: item.peer, clientId: item.id, envelope: encrypted, silent: item.silent });
-    if (result === 'timeout') return 'retry';
+    if (result === 'timeout') {
+      await store.setOutboxError(item.id, item.attempts + 1, 'El servidor no confirmó que recibió el mensaje');
+      return 'retry';
+    }
     await store.deleteOutbox(item.id);
     if (payload.t === 'msg') {
       const message = await store.getMessage(payload.id);

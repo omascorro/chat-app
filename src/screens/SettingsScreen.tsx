@@ -13,6 +13,7 @@ import { getAppLockEnabled, setAppLockEnabled } from '../lib/keystore';
 import { deleteFile } from '../lib/media';
 
 type PasswordPrompt = { kind: 'export'; includeMedia: boolean } | { kind: 'import'; uri: string } | null;
+type Diagnostics = Awaited<ReturnType<typeof client.getDiagnostics>>;
 
 export function SettingsScreen({ onClose }: { onClose: () => void }) {
   const { isDark, colors, styles } = useChatTheme();
@@ -20,10 +21,22 @@ export function SettingsScreen({ onClose }: { onClose: () => void }) {
   const [lockAvailable, setLockAvailable] = useState(false);
   const [prompt, setPrompt] = useState<PasswordPrompt>(null);
   const [busy, setBusy] = useState<string | null>(null);
+  const [diagnostics, setDiagnostics] = useState<Diagnostics | null>(null);
 
   useEffect(() => {
     getAppLockEnabled().then(setLockEnabled);
     Promise.all([LocalAuthentication.hasHardwareAsync(), LocalAuthentication.isEnrolledAsync()]).then(([h, e]) => setLockAvailable(h && e));
+  }, []);
+
+  useEffect(() => {
+    let cancelled = false;
+    const load = () => client.getDiagnostics().then((d) => !cancelled && setDiagnostics(d));
+    load();
+    const timer = setInterval(load, 3000);
+    return () => {
+      cancelled = true;
+      clearInterval(timer);
+    };
   }, []);
 
   const toggleLock = async (value: boolean) => {
@@ -131,6 +144,28 @@ export function SettingsScreen({ onClose }: { onClose: () => void }) {
               <Text style={[styles.infoText, { marginLeft: 10 }]}>{busy}</Text>
             </View>
           )}
+
+          <Text style={styles.infoSectionTitle}>DIAGNÓSTICO</Text>
+          {diagnostics && (
+            <View style={[styles.settingsRow, { flexDirection: 'column', alignItems: 'stretch' }]}>
+              <Text style={styles.settingsLabel}>
+                Conexión: {diagnostics.connected ? (diagnostics.authed ? 'activa' : 'conectado, iniciando sesión…') : 'sin conexión'}
+              </Text>
+              <Text style={styles.settingsHint}>Pendientes de enviar: {diagnostics.outbox.length}</Text>
+              {diagnostics.outbox.slice(0, 10).map((item) => (
+                <Text key={item.id} style={[styles.settingsHint, { marginTop: 6 }]}>
+                  • {item.what} para {item.peer} · hace {item.ageSeconds}s · intentos: {item.attempts}
+                  {item.lastError ? `\n   Último error: ${item.lastError}` : ''}
+                </Text>
+              ))}
+              {diagnostics.lastUploadError && (
+                <Text style={[styles.settingsHint, { marginTop: 6 }]}>Último archivo que no se pudo subir: {diagnostics.lastUploadError}</Text>
+              )}
+            </View>
+          )}
+          <TouchableOpacity style={styles.secondaryButton} onPress={() => client.retryNow()} activeOpacity={0.8}>
+            <Text style={styles.secondaryButtonText}>REINTENTAR ENVÍOS AHORA</Text>
+          </TouchableOpacity>
         </ScrollView>
       </SafeAreaView>
       <PromptModal
