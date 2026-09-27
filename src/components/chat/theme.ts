@@ -178,6 +178,37 @@ export function createStyles(COLORS: Colors) {
     },
     stickerOptionText: { fontSize: 30 },
 
+    // Encabezado del chat, con el mismo estilo que la barra de escritura
+    topRow: {
+      flexDirection: 'row', alignItems: 'center',
+      paddingHorizontal: 8, paddingTop: 6, paddingBottom: 6,
+      backgroundColor: COLORS.bg,
+    },
+    topBox: {
+      flex: 1, flexDirection: 'row', alignItems: 'center',
+      height: 50, backgroundColor: COLORS.card,
+      borderRadius: 25, borderWidth: 1, borderColor: COLORS.border,
+      paddingRight: 14, marginRight: 6,
+    },
+    topBack: { width: 36, height: 48, alignItems: 'center', justifyContent: 'center' },
+    topBackIcon: { fontSize: 30, color: COLORS.accent, fontWeight: '300', marginTop: -3 },
+    topContact: { flex: 1, flexDirection: 'row', alignItems: 'center' },
+    topName: { fontSize: 16, fontWeight: '700', color: COLORS.text },
+    topSub: { fontSize: 11, color: COLORS.textMuted, marginTop: 1 },
+    topRoundButton: {
+      width: 46, height: 46, borderRadius: 23, marginLeft: 4,
+      backgroundColor: COLORS.card, borderWidth: 1, borderColor: COLORS.border,
+      alignItems: 'center', justifyContent: 'center',
+    },
+    topRoundButtonActive: { backgroundColor: COLORS.primary, borderColor: COLORS.primary },
+    topRoundIcon: { fontSize: 18 },
+    topRoundTextActive: { fontSize: 14, color: '#F2F0E4', fontWeight: '800' },
+    topSearchRow: { paddingHorizontal: 8, paddingBottom: 6, backgroundColor: COLORS.bg },
+    topSearchInput: {
+      height: 44, backgroundColor: COLORS.card, borderRadius: 22, borderWidth: 1, borderColor: COLORS.border,
+      paddingHorizontal: 16, fontSize: 15, color: COLORS.text,
+    },
+
     // Barra de escritura estilo WhatsApp
     composerRow: {
       flexDirection: 'row', alignItems: 'flex-end',

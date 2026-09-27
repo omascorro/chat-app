@@ -7,17 +7,18 @@ function avatarColor(name: string) {
   return AVATAR_PALETTE[sum % AVATAR_PALETTE.length];
 }
 
-export function Avatar({ name, size = 40, photoBase64 }: { name: string; size?: number; photoBase64?: string | null }) {
+export function Avatar({ name, size = 40, photoBase64, round }: { name: string; size?: number; photoBase64?: string | null; round?: boolean }) {
+  const borderRadius = round ? size / 2 : size * 0.18;
   if (photoBase64) {
     return (
       <Image
         source={{ uri: `data:image/jpeg;base64,${photoBase64}` }}
-        style={{ width: size, height: size, borderRadius: size * 0.18 }}
+        style={{ width: size, height: size, borderRadius }}
       />
     );
   }
   return (
-    <View style={[avatarStyles.square, { width: size, height: size, borderRadius: size * 0.18, backgroundColor: avatarColor(name) }]}>
+    <View style={[avatarStyles.square, { width: size, height: size, borderRadius, backgroundColor: avatarColor(name) }]}>
       <Text style={[avatarStyles.letter, { fontSize: size * 0.42 }]}>{name.charAt(0).toUpperCase()}</Text>
     </View>
   );

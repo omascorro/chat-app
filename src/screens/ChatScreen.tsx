@@ -216,28 +216,36 @@ export function ChatScreen({ state, peer }: { state: ClientState; peer: string }
       <StatusBar style={isDark ? 'light' : 'dark'} />
       <SafeAreaView style={styles.container} edges={['top', 'bottom']}>
         <KeyboardAvoidingView style={{ flex: 1 }} behavior={Platform.OS === 'ios' ? 'padding' : 'height'} keyboardVerticalOffset={Platform.OS === 'ios' ? 90 : 0}>
-          <View style={styles.chatHeader}>
-            <TouchableOpacity onPress={() => client.openConversation(null)} style={styles.backTouchable}>
-              <Text style={styles.backChevron}>‹</Text>
-            </TouchableOpacity>
-            <TouchableOpacity style={{ flexDirection: 'row', alignItems: 'center', flex: 1 }} onPress={() => setShowInfo(true)} activeOpacity={0.7}>
-              <Avatar name={peer} size={36} photoBase64={contact?.profilePicture} />
-              <View style={{ marginLeft: 10, flex: 1 }}>
-                <Text style={styles.chatHeaderName}>{peer.toUpperCase()}</Text>
-                <Text style={styles.chatHeaderSub}>
-                  {contact?.online ? 'EN LÍNEA' : 'SIN CONEXIÓN'} · {contact?.verified ? 'VERIFICADO' : 'CANAL CIFRADO'}
-                </Text>
-              </View>
-            </TouchableOpacity>
-            <TouchableOpacity onPress={() => { setSearchOpen(!searchOpen); setSearchQuery(''); }} style={styles.headerIconButton} activeOpacity={0.7}>
-              <Text style={styles.headerIconText}>🔍</Text>
+          {/* Mismo estilo que la barra de escritura: una caja redondeada con el contacto y botones redondos */}
+          <View style={styles.topRow}>
+            <View style={styles.topBox}>
+              <TouchableOpacity onPress={() => client.openConversation(null)} style={styles.topBack} activeOpacity={0.6}>
+                <Text style={styles.topBackIcon}>‹</Text>
+              </TouchableOpacity>
+              <TouchableOpacity style={styles.topContact} onPress={() => setShowInfo(true)} activeOpacity={0.7}>
+                <Avatar name={peer} size={34} photoBase64={contact?.profilePicture} round />
+                <View style={{ marginLeft: 10, flex: 1 }}>
+                  <Text style={styles.topName} numberOfLines={1}>{peer}</Text>
+                  <Text style={styles.topSub} numberOfLines={1}>
+                    <Text style={{ color: contact?.online ? colors.primary : colors.textMuted }}>●</Text>{' '}
+                    {contact?.online ? 'En línea' : 'Sin conexión'} · {contact?.verified ? 'Verificado' : 'Cifrado'}
+                  </Text>
+                </View>
+              </TouchableOpacity>
+            </View>
+            <TouchableOpacity
+              onPress={() => { setSearchOpen(!searchOpen); setSearchQuery(''); }}
+              style={[styles.topRoundButton, searchOpen && styles.topRoundButtonActive]}
+              activeOpacity={0.7}
+            >
+              <Text style={styles.topRoundIcon}>🔍</Text>
             </TouchableOpacity>
             <TouchableOpacity
               onPress={() => setTimerMenu(true)}
-              style={[styles.logoutButton, { marginLeft: 4 }, timer > 0 && styles.selfDestructActive]}
+              style={[styles.topRoundButton, timer > 0 && styles.topRoundButtonActive, timer > 0 && { width: 'auto', paddingHorizontal: 12 }]}
               activeOpacity={0.7}
             >
-              <Text style={styles.logoutButtonText}>⏱ {shortTtl(timer)}</Text>
+              <Text style={[styles.topRoundIcon, timer > 0 && styles.topRoundTextActive]}>⏱{timer > 0 ? ` ${shortTtl(timer)}` : ''}</Text>
             </TouchableOpacity>
           </View>
 
@@ -258,10 +266,10 @@ export function ChatScreen({ state, peer }: { state: ClientState; peer: string }
           )}
 
           {searchOpen && (
-            <View style={styles.searchBar}>
+            <View style={styles.topSearchRow}>
               <TextInput
-                style={styles.searchInput}
-                placeholder="buscar en la conversación..."
+                style={styles.topSearchInput}
+                placeholder="Buscar en la conversación"
                 placeholderTextColor={colors.textMuted}
                 value={searchQuery}
                 onChangeText={setSearchQuery}
