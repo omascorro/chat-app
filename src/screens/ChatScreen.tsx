@@ -17,6 +17,7 @@ import { protectViewOnce } from '../lib/screenProtection';
 import { useAppearance, wallpaperFor } from '../lib/appearance';
 import { ChatWallpaper } from '../components/chat/ChatWallpaper';
 import { StickerPanel } from '../components/chat/StickerPanel';
+import { SwipeToReply } from '../components/chat/SwipeToReply';
 import { ChatMessage, formatTtl, shortTtl, TIMER_OPTIONS } from '../lib/types';
 import { ContactInfoScreen } from './ContactInfoScreen';
 
@@ -324,19 +325,28 @@ export function ChatScreen({ state, peer }: { state: ClientState; peer: string }
             contentContainerStyle={styles.messageList}
             keyboardShouldPersistTaps="handled"
             renderItem={({ item }) => (
-              <MessageBubble
-                message={item}
-                quoted={item.replyTo ? byId.get(item.replyTo) ?? null : null}
-                me={state.username}
-                peer={peer}
-                epoch={state.cacheEpoch}
-                styles={styles}
-                onLongPress={setActionTarget}
-                onZoom={setZoomUri}
-                onRetrySend={(id) => client.retrySend(id)}
-                onRetryDownload={(id) => client.retryDownload(id)}
-                onOpenViewOnce={openViewOnce}
-              />
+              <SwipeToReply
+                enabled={item.kind !== 'system' && !item.deleted}
+                iconColor={colors.accent}
+                onReply={() => {
+                  setEditing(null);
+                  setReplyTo(item);
+                }}
+              >
+                <MessageBubble
+                  message={item}
+                  quoted={item.replyTo ? byId.get(item.replyTo) ?? null : null}
+                  me={state.username}
+                  peer={peer}
+                  epoch={state.cacheEpoch}
+                  styles={styles}
+                  onLongPress={setActionTarget}
+                  onZoom={setZoomUri}
+                  onRetrySend={(id) => client.retrySend(id)}
+                  onRetryDownload={(id) => client.retryDownload(id)}
+                  onOpenViewOnce={openViewOnce}
+                />
+              </SwipeToReply>
             )}
           />
           </ChatWallpaper>
