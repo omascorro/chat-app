@@ -1,7 +1,7 @@
 import { Text, TouchableOpacity, View } from 'react-native';
 import { ChatMessage } from '../../lib/types';
 import { LinkableText } from './LinkableText';
-import { EncryptedImage, EncryptedVideo, EncryptedVoice } from './MediaViews';
+import { EncryptedImage, EncryptedSticker, EncryptedVideo, EncryptedVoice } from './MediaViews';
 import { ChatStyles } from './useChatTheme';
 
 function formatTime(ts: number) {
@@ -12,6 +12,7 @@ export function describeMessage(m: ChatMessage | null): string {
   if (!m) return 'Mensaje no disponible';
   if (m.deleted) return 'Mensaje eliminado';
   if (m.viewOnce) return '📷 Foto de ver una vez';
+  if (m.kind === 'sticker' && m.media) return '🏷 Sticker';
   switch (m.kind) {
     case 'image':
       return '📷 Foto';
@@ -68,6 +69,8 @@ export function MessageBubble({ message: item, quoted, me, peer, epoch, styles, 
 
   const mine = item.fromMe;
   const isMedia = !item.deleted && !item.viewOnce && (item.kind === 'image' || item.kind === 'video');
+  // Los stickers nuevos son imagenes; los viejos eran un emoji en el texto
+  const isImageSticker = item.kind === 'sticker' && !item.deleted && !!item.media;
   const reactions = Object.values(item.reactions);
   const mediaProps = { message: item, epoch, styles, onRetryDownload };
 
@@ -96,12 +99,20 @@ export function MessageBubble({ message: item, quoted, me, peer, epoch, styles, 
   return (
     <View style={{ alignItems: mine ? 'flex-end' : 'flex-start', marginVertical: 3 }}>
       <TouchableOpacity activeOpacity={0.85} onLongPress={() => onLongPress(item)} delayLongPress={300}>
-        {item.kind === 'sticker' && !item.deleted && !quote ? (
+        {isImageSticker && !quote ? (
+          <EncryptedSticker {...mediaProps} />
+        ) : item.kind === 'sticker' && !item.deleted && !quote ? (
           <Text style={styles.stickerText}>{item.body}</Text>
         ) : (
           <View style={[styles.bubble, mine ? styles.myBubble : styles.theirBubble, isMedia && !quote && styles.imageBubble]}>
             {quote}
-            {item.kind === 'sticker' && !item.deleted ? <Text style={{ fontSize: 40 }}>{item.body}</Text> : content}
+            {isImageSticker ? (
+              <EncryptedSticker {...mediaProps} size={110} />
+            ) : item.kind === 'sticker' && !item.deleted ? (
+              <Text style={{ fontSize: 40 }}>{item.body}</Text>
+            ) : (
+              content
+            )}
           </View>
         )}
       </TouchableOpacity>

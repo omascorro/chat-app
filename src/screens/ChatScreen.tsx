@@ -3,7 +3,7 @@ import * as ImageManipulator from 'expo-image-manipulator';
 import * as ImagePicker from 'expo-image-picker';
 import { StatusBar } from 'expo-status-bar';
 import { useEffect, useMemo, useRef, useState } from 'react';
-import { Alert, FlatList, KeyboardAvoidingView, Platform, Text, TextInput, TouchableOpacity, View } from 'react-native';
+import { Alert, FlatList, Keyboard, KeyboardAvoidingView, Platform, Text, TextInput, TouchableOpacity, View } from 'react-native';
 import ImageViewing from 'react-native-image-viewing';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { Avatar } from '../components/chat/Avatar';
@@ -16,6 +16,7 @@ import { decryptToCache, deleteIfAppFile, removeFromCache } from '../lib/media';
 import { protectViewOnce } from '../lib/screenProtection';
 import { useAppearance, wallpaperFor } from '../lib/appearance';
 import { ChatWallpaper } from '../components/chat/ChatWallpaper';
+import { StickerPanel } from '../components/chat/StickerPanel';
 import { ChatMessage, formatTtl, shortTtl, TIMER_OPTIONS } from '../lib/types';
 import { ContactInfoScreen } from './ContactInfoScreen';
 
@@ -26,6 +27,7 @@ export function ChatScreen({ state, peer }: { state: ClientState; peer: string }
   const contact = state.contacts.find((c) => c.username === peer);
 
   const [inputText, setInputText] = useState('');
+  const [showStickers, setShowStickers] = useState(false);
   const [timerMenu, setTimerMenu] = useState(false);
   const [viewOnceOpen, setViewOnceOpen] = useState<{ id: string; uri: string } | null>(null);
   const timer = state.timers[peer] || 0;
@@ -349,13 +351,26 @@ export function ChatScreen({ state, peer }: { state: ClientState; peer: string }
                 </Text>
               </View>
             ) : (
-              <View style={styles.composerBox}>
+              <View style={[styles.composerBox, !editing && { paddingLeft: 4 }]}>
+                {!editing && (
+                  <TouchableOpacity
+                    onPress={() => {
+                      Keyboard.dismiss();
+                      setShowStickers((v) => !v);
+                    }}
+                    style={styles.composerIconButton}
+                    activeOpacity={0.6}
+                  >
+                    <Text style={[styles.composerIcon, showStickers && { opacity: 0.5 }]}>🏷</Text>
+                  </TouchableOpacity>
+                )}
                 <TextInput
                   style={styles.composerInput}
                   placeholder={editing ? 'Editar mensaje' : 'Mensaje'}
                   placeholderTextColor={colors.textMuted}
                   value={inputText}
                   onChangeText={setInputText}
+                  onFocus={() => setShowStickers(false)}
                   multiline
                 />
                 {!editing && (
@@ -379,6 +394,17 @@ export function ChatScreen({ state, peer }: { state: ClientState; peer: string }
               </TouchableOpacity>
             )}
           </View>
+
+          {showStickers && !editing && (
+            <StickerPanel
+              epoch={state.cacheEpoch}
+              styles={styles}
+              colors={colors}
+              onSend={(id) => {
+                client.sendStickerImage(peer, id).catch((e) => Alert.alert('No se pudo mandar el sticker', String((e as Error)?.message ?? e)));
+              }}
+            />
+          )}
         </KeyboardAvoidingView>
       </SafeAreaView>
       <MessageActions
@@ -393,6 +419,14 @@ export function ChatScreen({ state, peer }: { state: ClientState; peer: string }
         onEdit={startEdit}
         onDeleteForEveryone={confirmDeleteForEveryone}
         onDeleteForMe={(m) => client.deleteForMe(m.id)}
+        onSaveSticker={async (m) => {
+          try {
+            const added = await client.saveReceivedSticker(m.id);
+            Alert.alert(added ? 'Sticker guardado' : 'Ya lo tenías', added ? 'Lo encuentras en tus stickers.' : 'Ese sticker ya está en tus stickers.');
+          } catch (e) {
+            Alert.alert('No se pudo guardar', String((e as Error)?.message ?? e));
+          }
+        }}
         onReact={(m, emoji) => client.react(peer, m.id, emoji)}
       />
       <ImageViewing images={zoomUri ? [{ uri: zoomUri }] : []} imageIndex={0} visible={!!zoomUri} onRequestClose={() => setZoomUri(null)} />

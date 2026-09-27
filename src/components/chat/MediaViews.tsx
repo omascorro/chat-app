@@ -15,7 +15,9 @@ function useDecryptedUri(message: ChatMessage, epoch: number) {
     setUri(null);
     setError(false);
     if (!message.mediaFile || !message.media || message.downloadState !== 'done') return;
-    decryptToCache(message.id, message.kind as MediaKind, message.mediaFile, message.media)
+    // Los stickers son imagenes (PNG)
+    const kind = (message.kind === 'sticker' ? 'image' : message.kind) as MediaKind;
+    decryptToCache(message.id, kind, message.mediaFile, message.media)
       .then((u) => !cancelled && setUri(u))
       .catch(() => !cancelled && setError(true));
     return () => {
@@ -58,6 +60,26 @@ export function EncryptedImage(props: MediaProps & { onZoom: (uri: string) => vo
       <Image source={{ uri }} style={props.styles.messageImage} resizeMode="cover" />
     </TouchableOpacity>
   );
+}
+
+// Sticker: imagen grande, sin burbuja y sin recortar (respeta la transparencia)
+export function EncryptedSticker(props: MediaProps & { size?: number }) {
+  const { uri, error } = useDecryptedUri(props.message, props.epoch);
+  const size = props.size ?? 150;
+  if (!uri) {
+    return (
+      <View style={{ width: size, height: size, alignItems: 'center', justifyContent: 'center' }}>
+        {props.message.downloadState === 'failed' || error ? (
+          <TouchableOpacity onPress={() => props.onRetryDownload(props.message.id)}>
+            <Text style={props.styles.mediaPlaceholderText}>⚠ Toca para reintentar</Text>
+          </TouchableOpacity>
+        ) : (
+          <Text style={props.styles.mediaPlaceholderText}>…</Text>
+        )}
+      </View>
+    );
+  }
+  return <Image source={{ uri }} style={{ width: size, height: size }} resizeMode="contain" />;
 }
 
 function VideoPlayerView({ uri, style }: { uri: string; style: any }) {

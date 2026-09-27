@@ -21,7 +21,21 @@ import { log } from './log';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { resetAppearance } from './appearance';
 import { SERVER_URL } from './config';
-import { deleteFile, downloadMedia, importPlainFile, MediaAuth, removeFromCache, uploadMedia, wipeAllMedia, wipeCache, withTimeout } from './media';
+import {
+  decryptToCache,
+  deleteFile,
+  downloadMedia,
+  importPlainFile,
+  MediaAuth,
+  readFileBase64,
+  removeFromCache,
+  uploadMedia,
+  wipeAllMedia,
+  wipeCache,
+  withTimeout,
+  writeStickerToCache,
+} from './media';
+import { prepareStickerImage, stickerIdFor } from './stickers';
 import { migrateLegacyData } from './migrate';
 import { ChatMessage, Contact, formatTtl, MediaKind, Payload } from './types';
 
@@ -997,6 +1011,49 @@ export class ChatClient {
 
   async sendSticker(peer: string, emoji: string) {
     await this.queueOutgoing(this.newOutgoing(peer, 'sticker', emoji));
+  }
+
+  // ---------- stickers (imagenes) ----------
+
+  async listStickers(): Promise<{ id: string; uri: string }[]> {
+    const store = this.store;
+    if (!store) return [];
+    const rows = await store.listStickers();
+    return Promise.all(rows.map(async (r) => ({ id: r.id, uri: await writeStickerToCache(r.id, r.data) })));
+  }
+
+  // Devuelve false si ese sticker ya estaba en la coleccion
+  async addStickerFromImage(uri: string, width?: number, height?: number): Promise<boolean> {
+    const store = this.store;
+    if (!store) return false;
+    const { id, base64 } = await prepareStickerImage(uri, width, height);
+    return store.addSticker(id, base64);
+  }
+
+  async deleteSticker(id: string) {
+    await this.store?.deleteSticker(id);
+  }
+
+  // Guardar en la coleccion un sticker que me mandaron
+  async saveReceivedSticker(messageId: string): Promise<boolean> {
+    const store = this.store;
+    const message = store ? await store.getMessage(messageId) : null;
+    if (!store || !message || message.kind !== 'sticker' || !message.mediaFile || !message.media) return false;
+    const plain = await decryptToCache(message.id, 'image', message.mediaFile, message.media);
+    const base64 = await readFileBase64(plain);
+    return store.addSticker(stickerIdFor(base64), base64);
+  }
+
+  // Se manda como una foto cifrada, pero se muestra sin burbuja
+  async sendStickerImage(peer: string, stickerId: string) {
+    const store = this.store;
+    if (!store) return;
+    const row = (await store.listStickers()).find((s) => s.id === stickerId);
+    if (!row) return;
+    const message = this.newOutgoing(peer, 'sticker', '');
+    const tempUri = await writeStickerToCache(`send_${message.id}`, row.data);
+    const { media, mediaFile } = await importPlainFile(message.id, tempUri, 'image', true);
+    await this.queueOutgoing({ ...message, media, mediaFile, downloadState: 'done' });
   }
 
   async sendMedia(peer: string, plainUri: string, kind: MediaKind, options: { duration?: number; replyTo?: string | null; viewOnce?: boolean } = {}) {

@@ -16,9 +16,10 @@ type ActionsProps = {
   onDeleteForEveryone: (m: ChatMessage) => void;
   onDeleteForMe: (m: ChatMessage) => void;
   onReact: (m: ChatMessage, emoji: string | null) => void;
+  onSaveSticker: (m: ChatMessage) => void;
 };
 
-export function MessageActions({ message, me, styles, onClose, onReply, onEdit, onDeleteForEveryone, onDeleteForMe, onReact }: ActionsProps) {
+export function MessageActions({ message, me, styles, onClose, onReply, onEdit, onDeleteForEveryone, onDeleteForMe, onReact, onSaveSticker }: ActionsProps) {
   if (!message) return null;
   const myReaction = message.reactions[me];
   const canInteract = !message.deleted;
@@ -55,6 +56,7 @@ export function MessageActions({ message, me, styles, onClose, onReply, onEdit, 
           )}
           {canInteract && option('↩  Responder', () => onReply(message))}
           {canInteract && message.fromMe && message.kind === 'text' && option('✎  Editar', () => onEdit(message))}
+          {canInteract && !message.fromMe && message.kind === 'sticker' && message.mediaFile && option('🏷  Guardar en mis stickers', () => onSaveSticker(message))}
           {message.fromMe && !message.deleted && option('🗑  Borrar para todos', () => onDeleteForEveryone(message), true)}
           {option('🗑  Borrar para mí', () => onDeleteForMe(message), true)}
         </Pressable>

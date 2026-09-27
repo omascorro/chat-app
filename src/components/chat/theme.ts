@@ -243,9 +243,15 @@ export function createStyles(COLORS: Colors) {
     recordingText: { flex: 1, color: COLORS.text, fontSize: 15, fontWeight: '600' },
     stickerText: { fontSize: 72 },
     stickerPanel: {
-      backgroundColor: COLORS.card, borderTopWidth: 2, borderTopColor: COLORS.primary,
-      paddingVertical: 10, paddingHorizontal: 8, maxHeight: 160,
+      height: 280, backgroundColor: COLORS.card,
+      borderTopLeftRadius: 22, borderTopRightRadius: 22, borderWidth: 1, borderColor: COLORS.border,
     },
+    stickerCell: { width: '25%', aspectRatio: 1, padding: 6 },
+    stickerAddCell: {
+      alignItems: 'center', justifyContent: 'center',
+      borderRadius: 18, borderWidth: 2, borderStyle: 'dashed', borderColor: COLORS.border,
+    },
+    stickerAddText: { fontSize: 30, color: COLORS.textMuted },
     stickerOption: {
       flex: 1, alignItems: 'center', justifyContent: 'center', paddingVertical: 8,
     },

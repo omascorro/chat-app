@@ -137,6 +137,19 @@ export function decryptToCache(messageId: string, kind: MediaKind, mediaFile: st
   return job;
 }
 
+// Los stickers de la coleccion viven cifrados en la base; para mostrarlos se escriben a la carpeta temporal
+export async function writeStickerToCache(id: string, base64: string): Promise<string> {
+  await ensureDir(CACHE_DIR);
+  const uri = `${CACHE_DIR}st_${id}.png`;
+  const info = await FileSystem.getInfoAsync(uri);
+  if (!info.exists) await FileSystem.writeAsStringAsync(uri, base64, { encoding: FileSystem.EncodingType.Base64 });
+  return uri;
+}
+
+export async function readFileBase64(uri: string): Promise<string> {
+  return FileSystem.readAsStringAsync(uri, { encoding: FileSystem.EncodingType.Base64 });
+}
+
 export async function removeFromCache(messageId: string) {
   for (const ext of Object.values(EXTENSIONS)) await deleteFile(`${CACHE_DIR}${messageId}.${ext}`);
 }

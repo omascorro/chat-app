@@ -48,6 +48,7 @@ CREATE TABLE IF NOT EXISTS outbox (
 );
 CREATE TABLE IF NOT EXISTS seen_inbox (id TEXT PRIMARY KEY, at INTEGER NOT NULL);
 CREATE TABLE IF NOT EXISTS kv (key TEXT PRIMARY KEY, value TEXT NOT NULL);
+CREATE TABLE IF NOT EXISTS stickers (id TEXT PRIMARY KEY, data TEXT NOT NULL, created_at INTEGER NOT NULL);
 `;
 
 async function addMissingColumns(db: SQLite.SQLiteDatabase, table: string, columns: Record<string, string>) {
@@ -322,6 +323,21 @@ export class Store {
 
   async pruneSeen() {
     await this.db.runAsync('DELETE FROM seen_inbox WHERE at < ?', Date.now() - 60 * 24 * 60 * 60 * 1000);
+  }
+
+  // ---- coleccion de stickers (PNG en base64, dentro de la base cifrada) ----
+
+  async listStickers(): Promise<{ id: string; data: string }[]> {
+    return this.db.getAllAsync<{ id: string; data: string }>('SELECT id, data FROM stickers ORDER BY created_at DESC');
+  }
+
+  async addSticker(id: string, data: string): Promise<boolean> {
+    const res = await this.db.runAsync('INSERT OR IGNORE INTO stickers (id, data, created_at) VALUES (?, ?, ?)', id, data, Date.now());
+    return res.changes > 0;
+  }
+
+  async deleteSticker(id: string) {
+    await this.db.runAsync('DELETE FROM stickers WHERE id = ?', id);
   }
 
   // ---- valores sueltos ----
