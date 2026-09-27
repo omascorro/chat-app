@@ -44,63 +44,70 @@ export function ContactsScreen({ state, onOpenSettings }: { state: ClientState; 
     <>
       <StatusBar style={isDark ? 'light' : 'dark'} />
       <SafeAreaView style={styles.container} edges={['top', 'bottom']}>
-        <View style={styles.header}>
-          <View style={styles.headerRow}>
+        {/* Mismo estilo que el chat: tu perfil en una caja redondeada y botones redondos */}
+        <View style={styles.topRow}>
+          <View style={[styles.topBox, { paddingLeft: 8 }]}>
             <TouchableOpacity onPress={updateProfilePicture} activeOpacity={0.7}>
-              <Avatar name={state.username} size={40} photoBase64={state.myProfilePicture} />
+              <Avatar name={state.username} size={34} photoBase64={state.myProfilePicture} round />
             </TouchableOpacity>
-            <View style={{ marginLeft: 12, flex: 1 }}>
-              <Text style={styles.headerTitle}>{state.username.toUpperCase()}</Text>
-              <Text style={styles.headerSubtitle}>{state.connected ? '● ENLACE ACTIVO' : '● SIN ENLACE'}</Text>
+            <View style={{ marginLeft: 10, flex: 1 }}>
+              <Text style={styles.topName} numberOfLines={1}>{state.username}</Text>
+              <Text style={styles.topSub} numberOfLines={1}>
+                <Text style={{ color: state.connected ? colors.primary : colors.danger }}>●</Text>{' '}
+                {state.connected ? 'Conectado' : 'Sin conexión'}
+              </Text>
             </View>
-            <TouchableOpacity onPress={onOpenSettings} style={styles.headerIconButton} activeOpacity={0.7}>
-              <Text style={styles.headerIconText}>⚙️</Text>
-            </TouchableOpacity>
-            <TouchableOpacity onPress={confirmLogout} style={styles.logoutButton} activeOpacity={0.7}>
-              <Text style={styles.logoutButtonText}>SALIR</Text>
-            </TouchableOpacity>
           </View>
-        </View>
-
-        <View style={[styles.sectionDivider, { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between' }]}>
-          <Text style={styles.sectionTitle}>REGISTRO DE CONTACTOS</Text>
-          <TouchableOpacity onPress={() => setAdding(true)} activeOpacity={0.7}>
-            <Text style={[styles.sectionTitle, { color: colors.accent }]}>+ AGREGAR</Text>
+          <TouchableOpacity onPress={onOpenSettings} style={styles.topRoundButton} activeOpacity={0.7}>
+            <Text style={styles.topRoundIcon}>⚙️</Text>
+          </TouchableOpacity>
+          <TouchableOpacity onPress={confirmLogout} style={styles.topRoundButton} activeOpacity={0.7}>
+            <Text style={[styles.topRoundIcon, { color: colors.danger }]}>⏻</Text>
           </TouchableOpacity>
         </View>
+
+        <Text style={styles.contactsTitle}>Chats</Text>
 
         <FlatList
           data={state.contacts}
           keyExtractor={(item) => item.username}
-          contentContainerStyle={{ paddingHorizontal: 16 }}
+          contentContainerStyle={{ paddingHorizontal: 12, paddingBottom: 96 }}
           ListEmptyComponent={
             <View style={styles.emptyState}>
-              <Text style={styles.emptyEmoji}>🦅</Text>
-              <Text style={styles.emptyText}>SIN CONTACTOS REGISTRADOS</Text>
-              <Text style={[styles.emptyText, { marginTop: 8, fontWeight: '400' }]}>Toca + AGREGAR y escribe el usuario de la otra persona</Text>
+              <Text style={styles.emptyEmoji}>💬</Text>
+              <Text style={styles.emptyText}>TODAVÍA NO TIENES CONTACTOS</Text>
+              <Text style={[styles.emptyText, { marginTop: 8, fontWeight: '400' }]}>Toca el botón + y escribe el usuario de la otra persona</Text>
             </View>
           }
           renderItem={({ item }) => (
-            <TouchableOpacity style={styles.userRow} onPress={() => client.openConversation(item.username)} activeOpacity={0.7}>
+            <TouchableOpacity style={styles.contactCard} onPress={() => client.openConversation(item.username)} activeOpacity={0.7}>
               <View>
-                <Avatar name={item.username} photoBase64={item.profilePicture} />
-                <View style={[styles.statusDot, { backgroundColor: item.online ? colors.primary : colors.textMuted }]} />
+                <Avatar name={item.username} size={48} photoBase64={item.profilePicture} round />
+                <View style={[styles.contactOnlineDot, { backgroundColor: item.online ? colors.primary : colors.textMuted }]} />
               </View>
               <View style={{ marginLeft: 12, flex: 1 }}>
-                <Text style={styles.userName}>{item.username.toUpperCase()}</Text>
-                <Text style={styles.userStatus}>{item.online ? 'EN LÍNEA' : 'SIN CONEXIÓN'}</Text>
-                {item.identityChanged && <Text style={styles.warningText}>⚠ SU LLAVE DE SEGURIDAD CAMBIÓ</Text>}
-                {!item.identityChanged && item.verified && <Text style={styles.verifiedText}>✔ VERIFICADO</Text>}
+                <Text style={styles.contactName} numberOfLines={1}>{item.username}</Text>
+                {item.identityChanged ? (
+                  <Text style={[styles.contactSub, { color: colors.danger, fontWeight: '700' }]} numberOfLines={1}>⚠ Su llave de seguridad cambió</Text>
+                ) : (
+                  <Text style={styles.contactSub} numberOfLines={1}>
+                    {item.online ? 'En línea' : 'Sin conexión'}
+                    {item.verified ? '  ·  ✔ Verificado' : ''}
+                  </Text>
+                )}
               </View>
               {item.unread > 0 && (
-                <View style={styles.unreadBadge}>
-                  <Text style={styles.unreadBadgeText}>{item.unread}</Text>
+                <View style={styles.contactUnread}>
+                  <Text style={styles.contactUnreadText}>{item.unread > 99 ? '99+' : item.unread}</Text>
                 </View>
               )}
-              <Text style={styles.chevron}>›</Text>
             </TouchableOpacity>
           )}
         />
+
+        <TouchableOpacity style={styles.fab} onPress={() => setAdding(true)} activeOpacity={0.8}>
+          <Text style={styles.fabIcon}>＋</Text>
+        </TouchableOpacity>
       </SafeAreaView>
       <PromptModal
         visible={adding}

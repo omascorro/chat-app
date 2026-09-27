@@ -141,13 +141,13 @@ export function createStyles(COLORS: Colors) {
     inputLabel: { fontSize: 10, fontWeight: '700', color: COLORS.textMuted, alignSelf: 'flex-start', letterSpacing: 1, marginBottom: 4 },
     input: {
       width: '100%', backgroundColor: COLORS.card,
-      borderRadius: 2, padding: 12, fontSize: 15, color: COLORS.text,
+      borderRadius: 14, padding: 12, fontSize: 15, color: COLORS.text,
       marginBottom: 14, borderWidth: 1, borderColor: COLORS.border,
     },
     errorText: { color: COLORS.danger, fontSize: 12, marginBottom: 10, alignSelf: 'flex-start', fontWeight: '600' },
     primaryButton: {
       width: '100%', backgroundColor: COLORS.accent,
-      borderRadius: 2, paddingVertical: 14, alignItems: 'center', marginTop: 6,
+      borderRadius: 24, paddingVertical: 14, alignItems: 'center', marginTop: 6,
     },
     primaryButtonText: { color: COLORS.onAccent, fontWeight: '800', fontSize: 14, letterSpacing: 1.5 },
     switchText: { color: COLORS.textMuted, marginTop: 18, fontSize: 11, letterSpacing: 0.5 },
@@ -190,7 +190,7 @@ export function createStyles(COLORS: Colors) {
     chatHeader: {
       flexDirection: 'row', alignItems: 'center',
       paddingHorizontal: 12, paddingVertical: 10,
-      backgroundColor: COLORS.card, borderBottomWidth: 2, borderBottomColor: COLORS.primary,
+      backgroundColor: COLORS.bg, borderBottomWidth: 1, borderBottomColor: COLORS.border,
     },
     backTouchable: { paddingRight: 6, paddingVertical: 4 },
     backChevron: { fontSize: 30, color: COLORS.accent, fontWeight: '300' },
@@ -250,6 +250,32 @@ export function createStyles(COLORS: Colors) {
       flex: 1, alignItems: 'center', justifyContent: 'center', paddingVertical: 8,
     },
     stickerOptionText: { fontSize: 30 },
+
+    // Lista de contactos, con el mismo estilo redondeado
+    contactsTitle: { fontSize: 24, fontWeight: '800', color: COLORS.text, paddingHorizontal: 18, paddingTop: 8, paddingBottom: 10 },
+    contactCard: {
+      flexDirection: 'row', alignItems: 'center',
+      backgroundColor: COLORS.card, borderRadius: 20, borderWidth: 1, borderColor: COLORS.border,
+      paddingVertical: 10, paddingHorizontal: 12, marginBottom: 8,
+    },
+    contactOnlineDot: {
+      position: 'absolute', bottom: 0, right: 0,
+      width: 14, height: 14, borderRadius: 7, borderWidth: 2, borderColor: COLORS.card,
+    },
+    contactName: { fontSize: 16, fontWeight: '700', color: COLORS.text },
+    contactSub: { fontSize: 13, color: COLORS.textMuted, marginTop: 2 },
+    contactUnread: {
+      minWidth: 24, height: 24, borderRadius: 12, paddingHorizontal: 7,
+      backgroundColor: COLORS.primary, alignItems: 'center', justifyContent: 'center', marginLeft: 8,
+    },
+    contactUnreadText: { fontSize: 12, fontWeight: '800', color: COLORS.onPrimary },
+    fab: {
+      position: 'absolute', right: 18, bottom: 28,
+      width: 58, height: 58, borderRadius: 29, backgroundColor: COLORS.primary,
+      alignItems: 'center', justifyContent: 'center',
+      shadowColor: '#000', shadowOpacity: 0.25, shadowRadius: 6, shadowOffset: { width: 0, height: 3 }, elevation: 5,
+    },
+    fabIcon: { fontSize: 28, color: COLORS.onPrimary, fontWeight: '600', marginTop: -2 },
 
     // Apariencia: temas y fondos
     themeCard: {
@@ -364,7 +390,7 @@ export function createStyles(COLORS: Colors) {
     bannerButton: { borderWidth: 1, borderColor: COLORS.onPrimary, borderRadius: 2, paddingHorizontal: 10, paddingVertical: 5, marginRight: 8 },
     bannerButtonText: { color: COLORS.onPrimary, fontSize: 10, fontWeight: '800', letterSpacing: 1 },
     modalBackdrop: { flex: 1, backgroundColor: 'rgba(0,0,0,0.5)', justifyContent: 'center', padding: 24 },
-    modalCard: { backgroundColor: COLORS.bg, borderRadius: 4, padding: 18, borderTopWidth: 3, borderTopColor: COLORS.accent },
+    modalCard: { backgroundColor: COLORS.bg, borderRadius: 22, padding: 20, borderWidth: 1, borderColor: COLORS.border },
     modalTitle: { fontSize: 13, fontWeight: '800', color: COLORS.accent, letterSpacing: 1.5, marginBottom: 12 },
     modalText: { fontSize: 13, color: COLORS.text, marginBottom: 12, lineHeight: 18 },
     modalOption: { paddingVertical: 12, borderBottomWidth: 1, borderBottomColor: COLORS.border },
@@ -395,17 +421,17 @@ export function createStyles(COLORS: Colors) {
     screenBody: { padding: 16 },
     infoSectionTitle: { fontSize: 10, fontWeight: '800', color: COLORS.textMuted, letterSpacing: 1.5, marginTop: 18, marginBottom: 8 },
     infoText: { fontSize: 13, color: COLORS.text, lineHeight: 19 },
-    safetyGrid: { flexDirection: 'row', flexWrap: 'wrap', backgroundColor: COLORS.card, borderWidth: 1, borderColor: COLORS.border, padding: 12, borderRadius: 3 },
+    safetyGrid: { flexDirection: 'row', flexWrap: 'wrap', backgroundColor: COLORS.card, borderWidth: 1, borderColor: COLORS.border, padding: 12, borderRadius: 18 },
     safetyGroup: { width: '25%', fontSize: 17, fontWeight: '700', color: COLORS.text, textAlign: 'center', paddingVertical: 6, letterSpacing: 1 },
     secondaryButton: {
-      width: '100%', borderWidth: 1, borderColor: COLORS.border, borderRadius: 2,
-      paddingVertical: 12, alignItems: 'center', marginTop: 10, backgroundColor: COLORS.card,
+      width: '100%', borderWidth: 1, borderColor: COLORS.border, borderRadius: 22,
+      paddingVertical: 13, alignItems: 'center', marginTop: 10, backgroundColor: COLORS.card,
     },
     secondaryButtonText: { color: COLORS.text, fontWeight: '800', fontSize: 12, letterSpacing: 1 },
     dangerButtonText: { color: COLORS.danger, fontWeight: '800', fontSize: 12, letterSpacing: 1 },
     settingsRow: {
       flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between',
-      backgroundColor: COLORS.card, borderWidth: 1, borderColor: COLORS.border, borderRadius: 3, padding: 12, marginBottom: 8,
+      backgroundColor: COLORS.card, borderWidth: 1, borderColor: COLORS.border, borderRadius: 18, padding: 14, marginBottom: 8,
     },
     settingsLabel: { fontSize: 13, fontWeight: '700', color: COLORS.text },
     settingsHint: { fontSize: 11, color: COLORS.textMuted, marginTop: 2 },
