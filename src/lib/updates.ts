@@ -5,16 +5,17 @@ import * as Updates from 'expo-updates';
 import { useEffect } from 'react';
 import { Alert, AppState } from 'react-native';
 import { log } from './log';
+import { releaseAllScreenProtection } from './screenProtection';
 
 // En iPhone, el bloqueo de capturas mete la ventana de la app dentro de un campo de texto "seguro". Si la app
 // se reinicia asi, la ventana nunca vuelve a su lugar y todo queda en negro hasta cerrar la app.
 // Por eso se quita la proteccion justo antes de reiniciar; la version nueva la vuelve a poner al arrancar.
 async function restartWithUpdate() {
+  await releaseAllScreenProtection();
   try {
-    await ScreenCapture.allowScreenCaptureAsync();
     await ScreenCapture.disableAppSwitcherProtectionAsync();
   } catch (e) {
-    log('No se pudo quitar la proteccion de pantalla antes de reiniciar:', e);
+    log('No se pudo quitar el difuminado antes de reiniciar:', e);
   }
   await Updates.reloadAsync();
 }

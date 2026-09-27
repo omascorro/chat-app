@@ -13,6 +13,7 @@ import { useChatTheme } from '../components/chat/useChatTheme';
 import { client, ClientState } from '../lib/client';
 import { log } from '../lib/log';
 import { decryptToCache, deleteIfAppFile, removeFromCache } from '../lib/media';
+import { protectViewOnce } from '../lib/screenProtection';
 import { ChatMessage, formatTtl, shortTtl, TIMER_OPTIONS } from '../lib/types';
 import { ContactInfoScreen } from './ContactInfoScreen';
 
@@ -61,8 +62,11 @@ export function ChatScreen({ state, peer }: { state: ClientState; peer: string }
   const openViewOnce = async (m: ChatMessage) => {
     if (!m.mediaFile || !m.media) return;
     try {
+      // Mientras la foto de "ver una vez" esta abierta no se puede capturar la pantalla
+      await protectViewOnce(true);
       setViewOnceOpen({ id: m.id, uri: await decryptToCache(m.id, 'image', m.mediaFile, m.media) });
     } catch (e) {
+      protectViewOnce(false);
       Alert.alert('No se pudo abrir la foto', String((e as Error)?.message ?? e));
     }
   };
@@ -71,6 +75,7 @@ export function ChatScreen({ state, peer }: { state: ClientState; peer: string }
     if (!viewOnceOpen) return;
     const { id } = viewOnceOpen;
     setViewOnceOpen(null);
+    protectViewOnce(false);
     removeFromCache(id);
     client.markViewOnceViewed(peer, id);
   };

@@ -11,6 +11,7 @@ import { BACKUP_PASSWORD_MIN_LENGTH } from '../lib/backup';
 import { client } from '../lib/client';
 import { getAppLockEnabled, setAppLockEnabled } from '../lib/keystore';
 import { deleteFile } from '../lib/media';
+import { getScreenCaptureBlocked, setScreenCaptureBlocked } from '../lib/screenProtection';
 
 type PasswordPrompt = { kind: 'export'; includeMedia: boolean } | { kind: 'import'; uri: string } | null;
 type Diagnostics = Awaited<ReturnType<typeof client.getDiagnostics>>;
@@ -23,7 +24,15 @@ export function SettingsScreen({ onClose }: { onClose: () => void }) {
   const [busy, setBusy] = useState<string | null>(null);
   const [diagnostics, setDiagnostics] = useState<Diagnostics | null>(null);
 
+  const [captureBlocked, setCaptureBlocked] = useState(false);
+
+  const toggleCaptureBlock = async (value: boolean) => {
+    setCaptureBlocked(value);
+    await setScreenCaptureBlocked(value);
+  };
+
   useEffect(() => {
+    getScreenCaptureBlocked().then(setCaptureBlocked);
     getAppLockEnabled().then(setLockEnabled);
     Promise.all([LocalAuthentication.hasHardwareAsync(), LocalAuthentication.isEnrolledAsync()]).then(([h, e]) => setLockAvailable(h && e));
   }, []);
@@ -145,9 +154,15 @@ export function SettingsScreen({ onClose }: { onClose: () => void }) {
             </View>
             <Switch value={lockEnabled && lockAvailable} onValueChange={toggleLock} disabled={!lockAvailable} />
           </View>
-          <Text style={[styles.settingsHint, { marginBottom: 8 }]}>
-            Las capturas y grabaciones de pantalla están bloqueadas dentro de la app, y en iOS el contenido se oculta en el selector de apps.
-          </Text>
+          <View style={styles.settingsRow}>
+            <View style={{ flex: 1, marginRight: 12 }}>
+              <Text style={styles.settingsLabel}>Bloquear capturas de pantalla</Text>
+              <Text style={styles.settingsHint}>
+                Impide capturas y grabaciones de pantalla dentro de la app. Las fotos de "ver una vez" siempre están protegidas mientras se ven.
+              </Text>
+            </View>
+            <Switch value={captureBlocked} onValueChange={toggleCaptureBlock} />
+          </View>
 
           <Text style={styles.infoSectionTitle}>RESPALDO CIFRADO</Text>
           <Text style={[styles.infoText, { marginBottom: 6 }]}>

@@ -8,6 +8,7 @@ import { AppLock } from '../components/AppLock';
 import { useChatTheme } from '../components/chat/useChatTheme';
 import { client } from '../lib/client';
 import { log } from '../lib/log';
+import { initScreenProtection } from '../lib/screenProtection';
 import { useAutoUpdates } from '../lib/updates';
 import { AuthScreen, RecoveryCodeScreen } from '../screens/AuthScreen';
 import { ChatScreen } from '../screens/ChatScreen';
@@ -28,12 +29,12 @@ export default function App() {
   const { colors, styles } = useChatTheme();
   const [settingsOpen, setSettingsOpen] = useState(false);
 
-  // Nada de capturas ni grabaciones de pantalla dentro de la app
-  ScreenCapture.usePreventScreenCapture();
   useAutoUpdates();
 
   useEffect(() => {
     client.boot().catch((e) => log('Error al arrancar:', e));
+    // Las capturas de pantalla se permiten salvo que se active el bloqueo en Ajustes
+    initScreenProtection();
     if (Platform.OS === 'ios') {
       // En el selector de apps de iOS se ve borroso en vez del contenido del chat
       ScreenCapture.enableAppSwitcherProtectionAsync(0.9).catch(() => {});
