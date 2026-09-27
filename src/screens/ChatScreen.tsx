@@ -16,14 +16,12 @@ import { decryptToCache, deleteIfAppFile, removeFromCache } from '../lib/media';
 import { ChatMessage, formatTtl, shortTtl, TIMER_OPTIONS } from '../lib/types';
 import { ContactInfoScreen } from './ContactInfoScreen';
 
-const STICKERS = ['🦅', '🎖️', '🫡', '💪', '🔥', '❤️', '😂', '👍', '💥', '🎯', '☕', '🌙'];
 
 export function ChatScreen({ state, peer }: { state: ClientState; peer: string }) {
   const { isDark, colors, styles } = useChatTheme();
   const contact = state.contacts.find((c) => c.username === peer);
 
   const [inputText, setInputText] = useState('');
-  const [showStickers, setShowStickers] = useState(false);
   const [timerMenu, setTimerMenu] = useState(false);
   const [viewOnceOpen, setViewOnceOpen] = useState<{ id: string; uri: string } | null>(null);
   const timer = state.timers[peer] || 0;
@@ -39,17 +37,13 @@ export function ChatScreen({ state, peer }: { state: ClientState; peer: string }
   const [recordingSeconds, setRecordingSeconds] = useState(0);
   const audioRecorder = useAudioRecorder(RecordingPresets.HIGH_QUALITY);
   const recordingTimerRef = useRef<ReturnType<typeof setInterval> | null>(null);
-  const flatListRef = useRef<FlatList>(null);
 
   const messages = state.messages;
   const byId = useMemo(() => new Map(messages.map((m) => [m.id, m])), [messages]);
   const searching = searchOpen && searchQuery.trim().length > 0;
-
-  useEffect(() => {
-    if (searching || messages.length === 0) return;
-    const timer = setTimeout(() => flatListRef.current?.scrollToEnd({ animated: true }), 50);
-    return () => clearTimeout(timer);
-  }, [messages, searching]);
+  // La lista va invertida (como WhatsApp): empieza abajo, en el ultimo mensaje, sin tener que desplazarse
+  // despues de dibujarse. Por eso los datos van del mas nuevo al mas viejo.
+  const listData = useMemo(() => [...(searching ? searchResults : messages)].reverse(), [searching, searchResults, messages]);
 
   useEffect(() => {
     if (!searching) return;
@@ -92,11 +86,6 @@ export function ChatScreen({ state, peer }: { state: ClientState; peer: string }
     }
     client.sendText(peer, text, { replyTo: replyTo?.id ?? null });
     setReplyTo(null);
-  };
-
-  const sendSticker = (emoji: string) => {
-    setShowStickers(false);
-    client.sendSticker(peer, emoji);
   };
 
   // Para fotos se pregunta si es normal o de "ver una vez"
@@ -191,6 +180,22 @@ export function ChatScreen({ state, peer }: { state: ClientState; peer: string }
     }
   };
 
+  // Descartar la grabacion sin mandarla
+  const cancelRecording = async () => {
+    if (recordingTimerRef.current) {
+      clearInterval(recordingTimerRef.current);
+      recordingTimerRef.current = null;
+    }
+    setIsRecording(false);
+    setRecordingSeconds(0);
+    try {
+      await audioRecorder.stop();
+    } catch {
+      return;
+    }
+    if (audioRecorder.uri) deleteIfAppFile(audioRecorder.uri);
+  };
+
   const startEdit = (m: ChatMessage) => {
     setReplyTo(null);
     setEditing(m);
@@ -265,18 +270,18 @@ export function ChatScreen({ state, peer }: { state: ClientState; peer: string }
             </View>
           )}
 
+          {searching && searchResults.length === 0 && (
+            <View style={styles.emptyState}>
+              <Text style={styles.emptyText}>SIN RESULTADOS</Text>
+            </View>
+          )}
           <FlatList
-            ref={flatListRef}
-            data={searching ? searchResults : messages}
+            inverted
+            style={{ flex: 1 }}
+            data={listData}
             keyExtractor={(item) => item.id}
             contentContainerStyle={styles.messageList}
-            ListEmptyComponent={
-              searching ? (
-                <View style={styles.emptyState}>
-                  <Text style={styles.emptyText}>SIN RESULTADOS</Text>
-                </View>
-              ) : null
-            }
+            keyboardShouldPersistTaps="handled"
             renderItem={({ item }) => (
               <MessageBubble
                 message={item}
@@ -293,21 +298,6 @@ export function ChatScreen({ state, peer }: { state: ClientState; peer: string }
               />
             )}
           />
-
-          {showStickers && (
-            <View style={styles.stickerPanel}>
-              <FlatList
-                data={STICKERS}
-                keyExtractor={(item) => item}
-                numColumns={6}
-                renderItem={({ item }) => (
-                  <TouchableOpacity onPress={() => sendSticker(item)} style={styles.stickerOption} activeOpacity={0.6}>
-                    <Text style={styles.stickerOptionText}>{item}</Text>
-                  </TouchableOpacity>
-                )}
-              />
-            </View>
-          )}
 
           {(replyTo || editing) && (
             <View style={styles.replyBar}>
@@ -327,42 +317,49 @@ export function ChatScreen({ state, peer }: { state: ClientState; peer: string }
             </View>
           )}
 
-          <View style={styles.inputRow}>
-            {!editing && (
-              <>
-                <TouchableOpacity style={styles.attachButton} onPress={() => setShowStickers((v) => !v)} activeOpacity={0.7}>
-                  <Text style={styles.attachButtonIcon}>😀</Text>
-                </TouchableOpacity>
-                <TouchableOpacity style={styles.attachButton} onPress={pickMedia} activeOpacity={0.7}>
-                  <Text style={styles.attachButtonIcon}>📎</Text>
-                </TouchableOpacity>
-                <TouchableOpacity
-                  style={[styles.attachButton, isRecording && styles.attachButtonRecording]}
-                  onPress={isRecording ? stopRecordingAndSend : startRecording}
-                  activeOpacity={0.7}
-                >
-                  <Text style={styles.attachButtonIcon}>{isRecording ? '⏹' : '🎤'}</Text>
-                </TouchableOpacity>
-              </>
-            )}
+          {/* Como WhatsApp: la caja con la camara adentro, y un solo boton redondo que es microfono
+              cuando no hay texto y enviar cuando si hay */}
+          <View style={styles.composerRow}>
             {isRecording ? (
-              <View style={styles.recordingIndicator}>
+              <View style={styles.composerBox}>
+                <TouchableOpacity onPress={cancelRecording} style={styles.composerIconButton} activeOpacity={0.6}>
+                  <Text style={styles.composerIcon}>🗑</Text>
+                </TouchableOpacity>
                 <View style={styles.recordingDot} />
-                <Text style={styles.recordingText}>Grabando... {recordingSeconds}s · toca otra vez para enviar</Text>
+                <Text style={styles.recordingText}>
+                  {Math.floor(recordingSeconds / 60)}:{String(recordingSeconds % 60).padStart(2, '0')} · Grabando…
+                </Text>
               </View>
             ) : (
-              <TextInput
-                style={styles.messageInput}
-                placeholder={editing ? 'editar mensaje...' : 'redactar mensaje...'}
-                placeholderTextColor={colors.textMuted}
-                value={inputText}
-                onChangeText={setInputText}
-                multiline
-              />
+              <View style={styles.composerBox}>
+                <TextInput
+                  style={styles.composerInput}
+                  placeholder={editing ? 'Editar mensaje' : 'Mensaje'}
+                  placeholderTextColor={colors.textMuted}
+                  value={inputText}
+                  onChangeText={setInputText}
+                  multiline
+                />
+                {!editing && (
+                  <TouchableOpacity onPress={pickMedia} style={styles.composerIconButton} activeOpacity={0.6}>
+                    <Text style={styles.composerIcon}>📷</Text>
+                  </TouchableOpacity>
+                )}
+              </View>
             )}
-            <TouchableOpacity style={styles.sendButton} onPress={send} activeOpacity={0.8}>
-              <Text style={styles.sendButtonIcon}>{editing ? '✓' : '➤'}</Text>
-            </TouchableOpacity>
+            {isRecording ? (
+              <TouchableOpacity style={[styles.composerAction, styles.composerActionRecording]} onPress={stopRecordingAndSend} activeOpacity={0.8}>
+                <Text style={styles.composerActionIcon}>➤</Text>
+              </TouchableOpacity>
+            ) : inputText.trim() !== '' || editing ? (
+              <TouchableOpacity style={styles.composerAction} onPress={send} activeOpacity={0.8}>
+                <Text style={styles.composerActionIcon}>{editing ? '✓' : '➤'}</Text>
+              </TouchableOpacity>
+            ) : (
+              <TouchableOpacity style={styles.composerAction} onPress={startRecording} activeOpacity={0.8}>
+                <Text style={styles.composerActionIcon}>🎤</Text>
+              </TouchableOpacity>
+            )}
           </View>
         </KeyboardAvoidingView>
       </SafeAreaView>

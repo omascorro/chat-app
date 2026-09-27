@@ -167,7 +167,7 @@ export function createStyles(COLORS: Colors) {
       borderWidth: 1, borderColor: COLORS.danger,
     },
     recordingDot: { width: 8, height: 8, borderRadius: 4, backgroundColor: COLORS.danger, marginRight: 8 },
-    recordingText: { color: COLORS.text, fontSize: 12, fontWeight: '600' },
+    recordingText: { flex: 1, color: COLORS.text, fontSize: 15, fontWeight: '600' },
     stickerText: { fontSize: 72 },
     stickerPanel: {
       backgroundColor: COLORS.card, borderTopWidth: 2, borderTopColor: COLORS.primary,
@@ -177,6 +177,31 @@ export function createStyles(COLORS: Colors) {
       flex: 1, alignItems: 'center', justifyContent: 'center', paddingVertical: 8,
     },
     stickerOptionText: { fontSize: 30 },
+
+    // Barra de escritura estilo WhatsApp
+    composerRow: {
+      flexDirection: 'row', alignItems: 'flex-end',
+      paddingHorizontal: 8, paddingTop: 6, paddingBottom: 8,
+      backgroundColor: COLORS.bg,
+    },
+    composerBox: {
+      flex: 1, flexDirection: 'row', alignItems: 'center',
+      minHeight: 46, backgroundColor: COLORS.card,
+      borderRadius: 23, borderWidth: 1, borderColor: COLORS.border,
+      paddingLeft: 16, paddingRight: 4, marginRight: 6,
+    },
+    composerInput: {
+      flex: 1, fontSize: 16, color: COLORS.text,
+      paddingTop: 11, paddingBottom: 11, maxHeight: 120,
+    },
+    composerIconButton: { width: 40, height: 40, alignItems: 'center', justifyContent: 'center' },
+    composerIcon: { fontSize: 20 },
+    composerAction: {
+      width: 46, height: 46, borderRadius: 23,
+      backgroundColor: COLORS.primary, alignItems: 'center', justifyContent: 'center',
+    },
+    composerActionRecording: { backgroundColor: COLORS.danger },
+    composerActionIcon: { fontSize: 19, color: '#F2F0E4', fontWeight: '800' },
 
     systemRow: { alignItems: 'center', marginVertical: 8, paddingHorizontal: 24 },
     systemText: { fontSize: 11, color: COLORS.textMuted, textAlign: 'center', fontStyle: 'italic' },
