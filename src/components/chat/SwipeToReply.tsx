@@ -1,3 +1,4 @@
+import * as Haptics from 'expo-haptics';
 import { ReactNode } from 'react';
 import { Text, View } from 'react-native';
 import { Gesture, GestureDetector } from 'react-native-gesture-handler';
@@ -6,6 +7,10 @@ import { scheduleOnRN } from 'react-native-worklets';
 
 const THRESHOLD = 60; // cuanto hay que deslizar para responder
 const MAX_DRAG = 90;
+
+function vibrate() {
+  Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light).catch(() => {});
+}
 
 // Deslizar un mensaje hacia la derecha para responderlo, como en WhatsApp. Solo se activa con un movimiento
 // claramente horizontal, asi que no interfiere con desplazar el chat ni con mantener presionado.
@@ -16,6 +21,7 @@ export function SwipeToReply({ enabled, onReply, iconColor, children }: {
   children: ReactNode;
 }) {
   const offset = useSharedValue(0);
+  const armed = useSharedValue(false);
 
   const pan = Gesture.Pan()
     .enabled(enabled)
@@ -24,9 +30,17 @@ export function SwipeToReply({ enabled, onReply, iconColor, children }: {
     .failOffsetY([-14, 14])
     .onUpdate((e) => {
       offset.value = Math.max(0, Math.min(MAX_DRAG, e.translationX));
+      // Una vibracion ligera justo cuando ya se puede soltar para responder
+      if (!armed.value && offset.value >= THRESHOLD) {
+        armed.value = true;
+        scheduleOnRN(vibrate);
+      } else if (armed.value && offset.value < THRESHOLD) {
+        armed.value = false;
+      }
     })
     .onEnd(() => {
       if (offset.value >= THRESHOLD) scheduleOnRN(onReply);
+      armed.value = false;
       offset.value = withSpring(0, { damping: 18, stiffness: 180 });
     });
 

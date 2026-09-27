@@ -119,10 +119,29 @@ export function ChatScreen({ state, peer }: { state: ClientState; peer: string }
       ], { cancelable: true, onDismiss: () => resolve(null) });
     });
 
-  const pickMedia = async () => {
-    const permission = await ImagePicker.requestMediaLibraryPermissionsAsync();
-    if (!permission.granted) return;
-    const result = await ImagePicker.launchImageLibraryAsync({ mediaTypes: ['images', 'videos'], quality: 0.4, videoMaxDuration: 30 });
+  const chooseMediaSource = () => {
+    Alert.alert('Enviar foto o video', undefined, [
+      { text: 'Cámara', onPress: () => pickMedia('camera') },
+      { text: 'Galería', onPress: () => pickMedia('library') },
+      { text: 'Cancelar', style: 'cancel' },
+    ]);
+  };
+
+  const pickMedia = async (source: 'camera' | 'library') => {
+    const options: ImagePicker.ImagePickerOptions = { mediaTypes: ['images', 'videos'], quality: 0.4, videoMaxDuration: 30 };
+    let result: ImagePicker.ImagePickerResult;
+    if (source === 'camera') {
+      const permission = await ImagePicker.requestCameraPermissionsAsync();
+      if (!permission.granted) {
+        Alert.alert('Sin permiso de cámara', 'Actívalo en la configuración del teléfono para tomar fotos desde la app.');
+        return;
+      }
+      result = await ImagePicker.launchCameraAsync(options);
+    } else {
+      const permission = await ImagePicker.requestMediaLibraryPermissionsAsync();
+      if (!permission.granted) return;
+      result = await ImagePicker.launchImageLibraryAsync(options);
+    }
     const asset = result.canceled ? null : result.assets?.[0];
     if (!asset?.uri) return;
     const isVideo = asset.type === 'video';
@@ -406,7 +425,7 @@ export function ChatScreen({ state, peer }: { state: ClientState; peer: string }
                   multiline
                 />
                 {!editing && (
-                  <TouchableOpacity onPress={pickMedia} style={styles.composerIconButton} activeOpacity={0.6}>
+                  <TouchableOpacity onPress={chooseMediaSource} style={styles.composerIconButton} activeOpacity={0.6}>
                     <Text style={styles.composerIcon}>📷</Text>
                   </TouchableOpacity>
                 )}

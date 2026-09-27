@@ -1,6 +1,7 @@
 import { StatusBar } from 'expo-status-bar';
 import { ScrollView, Text, TouchableOpacity, View } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
+import { AppIconPicker } from '../components/chat/AppIconPicker';
 import { ChatWallpaper } from '../components/chat/ChatWallpaper';
 import { THEMES } from '../components/chat/theme';
 import { useChatTheme } from '../components/chat/useChatTheme';
@@ -75,6 +76,9 @@ export function AppearanceScreen({ onClose }: { onClose: () => void }) {
             ))}
           </View>
           <Text style={styles.settingsHint}>Automático sigue el modo claro u oscuro de tu teléfono.</Text>
+
+          <Text style={styles.infoSectionTitle}>ÍCONO DE LA APP</Text>
+          <AppIconPicker styles={styles} colors={colors} />
 
           <Text style={styles.infoSectionTitle}>FONDO DE LOS CHATS</Text>
           <WallpaperPicker value={appearance.wallpaper} onChange={(w) => setWallpaper(null, w)} styles={styles} colors={colors} />

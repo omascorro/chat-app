@@ -283,6 +283,12 @@ export function createStyles(COLORS: Colors) {
     },
     fabIcon: { fontSize: 28, color: COLORS.onPrimary, fontWeight: '600', marginTop: -2 },
 
+    // Selector de icono de la app
+    iconGrid: { flexDirection: 'row', flexWrap: 'wrap' },
+    iconTile: { width: '25%', alignItems: 'center', marginBottom: 12 },
+    iconImage: { width: 60, height: 60, borderRadius: 14, borderWidth: 1, borderColor: COLORS.border },
+    iconLabel: { fontSize: 11, color: COLORS.textMuted, marginTop: 4, fontWeight: '600' },
+
     // Apariencia: temas y fondos
     themeCard: {
       flexDirection: 'row', alignItems: 'center',
