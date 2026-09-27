@@ -25,6 +25,7 @@ export function ChatScreen({ state, peer }: { state: ClientState; peer: string }
   const { isDark, colors, styles } = useChatTheme();
   const appearance = useAppearance();
   const contact = state.contacts.find((c) => c.username === peer);
+  const peerTyping = state.typing[peer];
 
   const [inputText, setInputText] = useState('');
   const [showStickers, setShowStickers] = useState(false);
@@ -62,7 +63,9 @@ export function ChatScreen({ state, peer }: { state: ClientState; peer: string }
 
   useEffect(() => () => {
     if (recordingTimerRef.current) clearInterval(recordingTimerRef.current);
-  }, []);
+    // Al salir del chat ya no se esta escribiendo
+    client.notifyTyping(peer, 'stop');
+  }, [peer]);
 
   const openViewOnce = async (m: ChatMessage) => {
     if (!m.mediaFile || !m.media) return;
@@ -85,7 +88,14 @@ export function ChatScreen({ state, peer }: { state: ClientState; peer: string }
     client.markViewOnceViewed(peer, id);
   };
 
+  // Avisa al otro que estas escribiendo (el cliente limita cada cuanto se manda)
+  const onChangeText = (text: string) => {
+    setInputText(text);
+    if (!editing) client.notifyTyping(peer, text.trim() ? 'start' : 'stop');
+  };
+
   const send = () => {
+    client.notifyTyping(peer, 'stop');
     const text = inputText;
     if (text.trim() === '') return;
     setInputText('');
@@ -157,13 +167,18 @@ export function ChatScreen({ state, peer }: { state: ClientState; peer: string }
       audioRecorder.record();
       setIsRecording(true);
       setRecordingSeconds(0);
-      recordingTimerRef.current = setInterval(() => setRecordingSeconds((s) => s + 1), 1000);
+      client.notifyTyping(peer, 'recording');
+      recordingTimerRef.current = setInterval(() => {
+        setRecordingSeconds((s) => s + 1);
+        client.notifyTyping(peer, 'recording');
+      }, 1000);
     } catch (e) {
       log('Error iniciando la grabacion:', e);
     }
   };
 
   const stopRecordingAndSend = async () => {
+    client.notifyTyping(peer, 'stop');
     if (recordingTimerRef.current) {
       clearInterval(recordingTimerRef.current);
       recordingTimerRef.current = null;
@@ -192,6 +207,7 @@ export function ChatScreen({ state, peer }: { state: ClientState; peer: string }
 
   // Descartar la grabacion sin mandarla
   const cancelRecording = async () => {
+    client.notifyTyping(peer, 'stop');
     if (recordingTimerRef.current) {
       clearInterval(recordingTimerRef.current);
       recordingTimerRef.current = null;
@@ -237,8 +253,14 @@ export function ChatScreen({ state, peer }: { state: ClientState; peer: string }
                 <View style={{ marginLeft: 10, flex: 1 }}>
                   <Text style={styles.topName} numberOfLines={1}>{peer}</Text>
                   <Text style={styles.topSub} numberOfLines={1}>
-                    <Text style={{ color: contact?.online ? colors.primary : colors.textMuted }}>●</Text>{' '}
-                    {contact?.online ? 'En línea' : 'Sin conexión'} · {contact?.verified ? 'Verificado' : 'Cifrado'}
+                    {peerTyping ? (
+                      <Text style={{ color: colors.accent, fontWeight: '700' }}>{peerTyping === 'recording' ? 'grabando audio…' : 'escribiendo…'}</Text>
+                    ) : (
+                      <>
+                        <Text style={{ color: contact?.online ? colors.primary : colors.textMuted }}>●</Text>{' '}
+                        {contact?.online ? 'En línea' : 'Sin conexión'} · {contact?.verified ? 'Verificado' : 'Cifrado'}
+                      </>
+                    )}
                   </Text>
                 </View>
               </TouchableOpacity>
@@ -369,7 +391,7 @@ export function ChatScreen({ state, peer }: { state: ClientState; peer: string }
                   placeholder={editing ? 'Editar mensaje' : 'Mensaje'}
                   placeholderTextColor={colors.textMuted}
                   value={inputText}
-                  onChangeText={setInputText}
+                  onChangeText={onChangeText}
                   onFocus={() => setShowStickers(false)}
                   multiline
                 />

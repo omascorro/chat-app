@@ -2,7 +2,7 @@ import * as DocumentPicker from 'expo-document-picker';
 import * as LocalAuthentication from 'expo-local-authentication';
 import * as Sharing from 'expo-sharing';
 import { StatusBar } from 'expo-status-bar';
-import { useEffect, useState } from 'react';
+import { useEffect, useState, useSyncExternalStore } from 'react';
 import { ActivityIndicator, Alert, ScrollView, Switch, Text, TouchableOpacity, View } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { PromptModal } from '../components/chat/Modals';
@@ -19,6 +19,7 @@ type Diagnostics = Awaited<ReturnType<typeof client.getDiagnostics>>;
 
 export function SettingsScreen({ onClose }: { onClose: () => void }) {
   const { isDark, colors, styles } = useChatTheme();
+  const clientState = useSyncExternalStore(client.subscribe, client.getSnapshot);
   const [appearanceOpen, setAppearanceOpen] = useState(false);
   const [lockEnabled, setLockEnabled] = useState(true);
   const [lockAvailable, setLockAvailable] = useState(false);
@@ -175,6 +176,15 @@ export function SettingsScreen({ onClose }: { onClose: () => void }) {
               </Text>
             </View>
             <Switch value={captureBlocked} onValueChange={toggleCaptureBlock} />
+          </View>
+          <View style={styles.settingsRow}>
+            <View style={{ flex: 1, marginRight: 12 }}>
+              <Text style={styles.settingsLabel}>Indicador de "escribiendo…"</Text>
+              <Text style={styles.settingsHint}>
+                Si lo apagas, no avisas cuando escribes o grabas un audio, y tampoco ves cuando el otro lo hace.
+              </Text>
+            </View>
+            <Switch value={clientState.typingEnabled} onValueChange={(v) => client.setTypingEnabled(v)} />
           </View>
 
           <Text style={styles.infoSectionTitle}>RESPALDO CIFRADO</Text>

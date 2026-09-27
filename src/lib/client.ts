@@ -48,6 +48,8 @@ const MAX_UPLOAD_ATTEMPTS = 5;
 const MAX_DOWNLOAD_ATTEMPTS = 3;
 const MAX_TEXT_LENGTH = 20_000;
 const MAX_TTL_SECONDS = 7 * 24 * 60 * 60;
+const TYPING_VISIBLE_MS = 6_000;
+const TYPING_RESEND_MS = 3_000;
 const HEARTBEAT_MS = 25_000;
 const PING_TIMEOUT_MS = 6_000;
 const ITEM_TIMEOUT_MS = 60_000;
@@ -69,6 +71,8 @@ export type ClientState = {
   messages: ChatMessage[];
   cacheEpoch: number; // cambia cuando se borra la carpeta temporal: los visores vuelven a descifrar
   timers: Record<string, number>; // segundos de los mensajes temporales por conversacion (0 = desactivado)
+  typing: Record<string, 'typing' | 'recording'>; // contactos que estan escribiendo o grabando un audio ahora
+  typingEnabled: boolean;
 };
 
 type ServerUser = { username: string; online: boolean; profilePicture: string | null; identity: PublicIdentity | null };
@@ -100,6 +104,8 @@ const INITIAL_STATE: ClientState = {
   messages: [],
   cacheEpoch: 0,
   timers: {},
+  typing: {},
+  typingEnabled: true,
 };
 
 export class ChatClient {
@@ -158,6 +164,8 @@ export class ChatClient {
     if (this.booted) return;
     this.booted = true;
     await wipeCache();
+    const typingSetting = await AsyncStorage.getItem('typing_indicators').catch(() => null);
+    if (typingSetting === 'off') this.setState({ typingEnabled: false });
 
     AppState.addEventListener('change', (next) => this.onAppStateChange(next));
 
@@ -448,7 +456,7 @@ export class ChatClient {
     this.serverUsers = [];
     if (store) await store.close().catch(() => {});
     await wipeCache();
-    this.setState({ ...INITIAL_STATE, phase: 'loggedOut', connected: this.state.connected, authError, cacheEpoch: this.state.cacheEpoch + 1 });
+    this.setState({ ...INITIAL_STATE, phase: 'loggedOut', connected: this.state.connected, typingEnabled: this.state.typingEnabled, authError, cacheEpoch: this.state.cacheEpoch + 1 });
   }
 
   private async registerForPushNotifications() {
@@ -517,6 +525,9 @@ export class ChatClient {
         return;
       case 'message':
         this.enqueueInbound(() => this.processInbound(String(data.id), data.from, data.envelope));
+        return;
+      case 'typing':
+        if (typeof data.from === 'string') this.onPeerTyping(data.from, data.state);
         return;
       case 'pong': {
         const waiter = this.pingWaiters.get(data.id);
@@ -784,6 +795,8 @@ export class ChatClient {
     this.send({ type: 'ack', ids: [inboxId] });
     await this.afterChange(from);
     const applied = payload as Payload | null;
+    // Si llego su mensaje, ya termino de escribir
+    if (applied?.t === 'msg') this.clearPeerTyping(from);
     if (applied?.t === 'msg' && applied.media) this.runDownloads();
     if (this.state.openPeer === from) await this.markConversationRead(from);
   }
@@ -862,6 +875,51 @@ export class ChatClient {
         await store.setViewed(target.id);
       }
     }
+  }
+
+  // ---------- "escribiendo..." ----------
+  // Es una senal efimera que el servidor reenvia sin guardar; no lleva nada del contenido.
+
+  private typingTimers = new Map<string, ReturnType<typeof setTimeout>>();
+  private lastTypingSent = new Map<string, { state: string; at: number }>();
+
+  private onPeerTyping(peer: string, state: string) {
+    const existing = this.typingTimers.get(peer);
+    if (existing) clearTimeout(existing);
+    this.typingTimers.delete(peer);
+    if (!this.state.typingEnabled || state === 'stop') {
+      this.clearPeerTyping(peer);
+      return;
+    }
+    this.setState({ typing: { ...this.state.typing, [peer]: state === 'recording' ? 'recording' : 'typing' } });
+    // Si deja de llegar la senal (se fue sin mandar nada), se quita sola
+    this.typingTimers.set(peer, setTimeout(() => this.clearPeerTyping(peer), TYPING_VISIBLE_MS));
+  }
+
+  private clearPeerTyping(peer: string) {
+    if (!this.state.typing[peer]) return;
+    const typing = { ...this.state.typing };
+    delete typing[peer];
+    this.setState({ typing });
+  }
+
+  // La pantalla del chat avisa mientras se escribe o se graba; se manda como maximo cada 3 segundos
+  notifyTyping(peer: string, state: 'start' | 'recording' | 'stop') {
+    if (!this.state.typingEnabled || !this.authed) return;
+    const last = this.lastTypingSent.get(peer);
+    const now = Date.now();
+    if (state === 'stop') {
+      if (!last || last.state === 'stop' || now - last.at > TYPING_VISIBLE_MS) return;
+    } else if (last && last.state === state && now - last.at < TYPING_RESEND_MS) {
+      return;
+    }
+    this.lastTypingSent.set(peer, { state, at: now });
+    this.send({ type: 'typing', to: peer, state });
+  }
+
+  async setTypingEnabled(enabled: boolean) {
+    await AsyncStorage.setItem('typing_indicators', enabled ? 'on' : 'off').catch(() => {});
+    this.setState({ typingEnabled: enabled, typing: enabled ? this.state.typing : {} });
   }
 
   // ---------- mensajes temporales ----------

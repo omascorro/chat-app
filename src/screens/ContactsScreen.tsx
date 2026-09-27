@@ -87,7 +87,11 @@ export function ContactsScreen({ state, onOpenSettings }: { state: ClientState; 
               </View>
               <View style={{ marginLeft: 12, flex: 1 }}>
                 <Text style={styles.contactName} numberOfLines={1}>{item.username}</Text>
-                {item.identityChanged ? (
+                {state.typing[item.username] ? (
+                  <Text style={[styles.contactSub, { color: colors.accent, fontWeight: '700' }]} numberOfLines={1}>
+                    {state.typing[item.username] === 'recording' ? 'grabando audio…' : 'escribiendo…'}
+                  </Text>
+                ) : item.identityChanged ? (
                   <Text style={[styles.contactSub, { color: colors.danger, fontWeight: '700' }]} numberOfLines={1}>⚠ Su llave de seguridad cambió</Text>
                 ) : (
                   <Text style={styles.contactSub} numberOfLines={1}>
