@@ -1,10 +1,13 @@
 import { useMemo } from 'react';
 import { useColorScheme } from 'react-native';
-import { createStyles, DARK_COLORS, LIGHT_COLORS } from './theme';
+import { useAppearance } from '../../lib/appearance';
+import { createStyles, getTheme } from './theme';
 
 export function useChatTheme() {
-  const isDark = useColorScheme() === 'dark';
-  const colors = isDark ? DARK_COLORS : LIGHT_COLORS;
+  const system = useColorScheme();
+  const { themeId, mode } = useAppearance();
+  const isDark = mode === 'auto' ? system === 'dark' : mode === 'dark';
+  const colors = getTheme(themeId)[isDark ? 'dark' : 'light'];
   const styles = useMemo(() => createStyles(colors), [colors]);
   return { isDark, colors, styles };
 }

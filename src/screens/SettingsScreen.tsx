@@ -6,6 +6,7 @@ import { useEffect, useState } from 'react';
 import { ActivityIndicator, Alert, ScrollView, Switch, Text, TouchableOpacity, View } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { PromptModal } from '../components/chat/Modals';
+import { AppearanceScreen } from './AppearanceScreen';
 import { useChatTheme } from '../components/chat/useChatTheme';
 import { BACKUP_PASSWORD_MIN_LENGTH } from '../lib/backup';
 import { client } from '../lib/client';
@@ -18,6 +19,7 @@ type Diagnostics = Awaited<ReturnType<typeof client.getDiagnostics>>;
 
 export function SettingsScreen({ onClose }: { onClose: () => void }) {
   const { isDark, colors, styles } = useChatTheme();
+  const [appearanceOpen, setAppearanceOpen] = useState(false);
   const [lockEnabled, setLockEnabled] = useState(true);
   const [lockAvailable, setLockAvailable] = useState(false);
   const [prompt, setPrompt] = useState<PasswordPrompt>(null);
@@ -131,6 +133,8 @@ export function SettingsScreen({ onClose }: { onClose: () => void }) {
     }
   };
 
+  if (appearanceOpen) return <AppearanceScreen onClose={() => setAppearanceOpen(false)} />;
+
   return (
     <>
       <StatusBar style={isDark ? 'light' : 'dark'} />
@@ -142,6 +146,15 @@ export function SettingsScreen({ onClose }: { onClose: () => void }) {
           <Text style={styles.chatHeaderName}>AJUSTES</Text>
         </View>
         <ScrollView contentContainerStyle={styles.screenBody}>
+          <Text style={styles.infoSectionTitle}>APARIENCIA</Text>
+          <TouchableOpacity style={styles.settingsRow} onPress={() => setAppearanceOpen(true)} activeOpacity={0.7}>
+            <View style={{ flex: 1, marginRight: 12 }}>
+              <Text style={styles.settingsLabel}>🎨  Tema y fondos de los chats</Text>
+              <Text style={styles.settingsHint}>Colores de la app, modo claro u oscuro y fondo de pantalla de los chats.</Text>
+            </View>
+            <Text style={styles.chevron}>›</Text>
+          </TouchableOpacity>
+
           <Text style={styles.infoSectionTitle}>SEGURIDAD</Text>
           <View style={styles.settingsRow}>
             <View style={{ flex: 1, marginRight: 12 }}>

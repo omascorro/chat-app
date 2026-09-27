@@ -69,7 +69,7 @@ export function AuthScreen({ state }: { state: ClientState }) {
           </Text>
 
           <View style={styles.connectionPill}>
-            <View style={[styles.dot, { backgroundColor: state.connected ? '#6B7A3A' : '#C0432E' }]} />
+            <View style={[styles.dot, { backgroundColor: state.connected ? colors.primary : colors.danger }]} />
             <Text style={styles.connectionText}>{state.connected ? 'ENLACE ACTIVO' : 'CONECTANDO...'}</Text>
           </View>
 

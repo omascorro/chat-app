@@ -14,12 +14,15 @@ import { client, ClientState } from '../lib/client';
 import { log } from '../lib/log';
 import { decryptToCache, deleteIfAppFile, removeFromCache } from '../lib/media';
 import { protectViewOnce } from '../lib/screenProtection';
+import { useAppearance, wallpaperFor } from '../lib/appearance';
+import { ChatWallpaper } from '../components/chat/ChatWallpaper';
 import { ChatMessage, formatTtl, shortTtl, TIMER_OPTIONS } from '../lib/types';
 import { ContactInfoScreen } from './ContactInfoScreen';
 
 
 export function ChatScreen({ state, peer }: { state: ClientState; peer: string }) {
   const { isDark, colors, styles } = useChatTheme();
+  const appearance = useAppearance();
   const contact = state.contacts.find((c) => c.username === peer);
 
   const [inputText, setInputText] = useState('');
@@ -283,6 +286,7 @@ export function ChatScreen({ state, peer }: { state: ClientState; peer: string }
             </View>
           )}
 
+          <ChatWallpaper wallpaper={wallpaperFor(appearance, peer)} fallbackColor={colors.bg}>
           {searching && searchResults.length === 0 && (
             <View style={styles.emptyState}>
               <Text style={styles.emptyText}>SIN RESULTADOS</Text>
@@ -311,6 +315,7 @@ export function ChatScreen({ state, peer }: { state: ClientState; peer: string }
               />
             )}
           />
+          </ChatWallpaper>
 
           {(replyTo || editing) && (
             <View style={styles.replyBar}>

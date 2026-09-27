@@ -84,7 +84,7 @@ export function ContactsScreen({ state, onOpenSettings }: { state: ClientState; 
             <TouchableOpacity style={styles.userRow} onPress={() => client.openConversation(item.username)} activeOpacity={0.7}>
               <View>
                 <Avatar name={item.username} photoBase64={item.profilePicture} />
-                <View style={[styles.statusDot, { backgroundColor: item.online ? '#6B7A3A' : '#7A745F' }]} />
+                <View style={[styles.statusDot, { backgroundColor: item.online ? colors.primary : colors.textMuted }]} />
               </View>
               <View style={{ marginLeft: 12, flex: 1 }}>
                 <Text style={styles.userName}>{item.username.toUpperCase()}</Text>

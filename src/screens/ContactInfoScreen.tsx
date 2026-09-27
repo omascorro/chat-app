@@ -4,11 +4,14 @@ import { Alert, ScrollView, Text, TouchableOpacity, View } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { Avatar } from '../components/chat/Avatar';
 import { useChatTheme } from '../components/chat/useChatTheme';
+import { WallpaperPicker } from '../components/chat/WallpaperPicker';
+import { setWallpaper, useAppearance } from '../lib/appearance';
 import { client, ClientState } from '../lib/client';
 import { formatSafetyNumber } from '../lib/crypto/safetyNumber';
 
 export function ContactInfoScreen({ state, peer, onClose }: { state: ClientState; peer: string; onClose: () => void }) {
-  const { isDark, styles } = useChatTheme();
+  const { isDark, colors, styles } = useChatTheme();
+  const appearance = useAppearance();
   const contact = state.contacts.find((c) => c.username === peer);
   const [number, setNumber] = useState<string | null>(null);
 
@@ -92,6 +95,15 @@ export function ContactInfoScreen({ state, peer, onClose }: { state: ClientState
               <Text style={styles.secondaryButtonText}>{contact?.verified ? 'QUITAR VERIFICACIÓN' : '✔ YA LO COMPARÉ: MARCAR COMO VERIFICADO'}</Text>
             </TouchableOpacity>
           )}
+
+          <Text style={styles.infoSectionTitle}>FONDO DE ESTE CHAT</Text>
+          <WallpaperPicker
+            value={appearance.perChat[peer] ?? null}
+            allowInherit
+            onChange={(w) => setWallpaper(peer, w)}
+            styles={styles}
+            colors={colors}
+          />
 
           <Text style={styles.infoSectionTitle}>AVANZADO</Text>
           <TouchableOpacity style={styles.secondaryButton} onPress={confirmReset} activeOpacity={0.8}>

@@ -19,6 +19,7 @@ import {
 } from './keystore';
 import { log } from './log';
 import AsyncStorage from '@react-native-async-storage/async-storage';
+import { resetAppearance } from './appearance';
 import { SERVER_URL } from './config';
 import { deleteFile, downloadMedia, importPlainFile, MediaAuth, removeFromCache, uploadMedia, wipeAllMedia, wipeCache, withTimeout } from './media';
 import { migrateLegacyData } from './migrate';
@@ -329,6 +330,7 @@ export class ChatClient {
       await AsyncStorage.removeItem(`messages_${username}`).catch(() => {});
     }
     await wipeAllMedia();
+    await resetAppearance(); // las fotos de fondo tambien pueden ser personales
     await this.resetToLoggedOut('Se borró todo de este teléfono.');
   }
 

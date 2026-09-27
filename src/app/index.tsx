@@ -8,6 +8,7 @@ import { AppLock } from '../components/AppLock';
 import { useChatTheme } from '../components/chat/useChatTheme';
 import { client } from '../lib/client';
 import { log } from '../lib/log';
+import { loadAppearance } from '../lib/appearance';
 import { initScreenProtection } from '../lib/screenProtection';
 import { useAutoUpdates } from '../lib/updates';
 import { AuthScreen, RecoveryCodeScreen } from '../screens/AuthScreen';
@@ -32,6 +33,7 @@ export default function App() {
   useAutoUpdates();
 
   useEffect(() => {
+    loadAppearance();
     client.boot().catch((e) => log('Error al arrancar:', e));
     // Las capturas de pantalla se permiten salvo que se active el bloqueo en Ajustes
     initScreenProtection();
