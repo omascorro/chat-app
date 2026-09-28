@@ -42,17 +42,22 @@ import { ChatMessage, Contact, formatTtl, MediaKind, Payload } from './types';
 const PROTOCOL_VERSION = 2;
 export const SELF_DESTRUCT_MS = 10_000;
 export const PASSWORD_MIN_LENGTH = 8;
-const ACCEPT_TIMEOUT_MS = 20_000;
-const REQUEST_TIMEOUT_MS = 10_000;
+// Limites de tiempo; las pruebas automaticas los acortan
+export const TIMEOUTS = {
+  accept: 20_000, // confirmacion del servidor al mandar un mensaje
+  request: 10_000,
+  heartbeat: 25_000,
+  ping: 6_000,
+  item: 60_000, // un envio completo de la cola
+  retry: 15_000, // reintento de la cola
+  reconnect: 2_000,
+};
 const MAX_UPLOAD_ATTEMPTS = 5;
 const MAX_DOWNLOAD_ATTEMPTS = 3;
 const MAX_TEXT_LENGTH = 20_000;
 const MAX_TTL_SECONDS = 7 * 24 * 60 * 60;
 const TYPING_VISIBLE_MS = 6_000;
 const TYPING_RESEND_MS = 3_000;
-const HEARTBEAT_MS = 25_000;
-const PING_TIMEOUT_MS = 6_000;
-const ITEM_TIMEOUT_MS = 60_000;
 
 export type Phase = 'booting' | 'loggedOut' | 'recovery' | 'ready';
 
@@ -187,7 +192,7 @@ export class ChatClient {
     // Mientras la app esta abierta se revisa cada 25 s que la conexion siga viva
     setInterval(() => {
       if (this.appState === 'active') this.checkConnection();
-    }, HEARTBEAT_MS);
+    }, TIMEOUTS.heartbeat);
   }
 
   private onAppStateChange(next: AppStateStatus) {
@@ -218,7 +223,7 @@ export class ChatClient {
     }
     this.checkingConnection = true;
     try {
-      if (!(await this.ping(PING_TIMEOUT_MS))) {
+      if (!(await this.ping(TIMEOUTS.ping))) {
         log('La conexion no respondio, se abre una nueva');
         this.connect();
       } else if (this.authed) {
@@ -283,12 +288,14 @@ export class ChatClient {
     socket.onclose = () => {
       if (this.ws !== socket) return;
       this.authed = false;
+      // Si se corta mientras se inicia sesion, avisar en vez de quedarse esperando
+      if (this.state.authBusy) this.setState({ authError: 'Se perdió la conexión con el servidor. Intenta de nuevo.' });
       this.setState({ connected: false, authBusy: false });
       this.failPendingSends();
       this.reconnectTimer = setTimeout(() => {
         this.reconnectTimer = null;
         this.connect();
-      }, 2000);
+      }, TIMEOUTS.reconnect);
     };
 
     socket.onmessage = (event) => {
@@ -566,7 +573,7 @@ export class ChatClient {
       const timer = setTimeout(() => {
         this.requestWaiters.delete(requestId);
         resolve(null);
-      }, REQUEST_TIMEOUT_MS);
+      }, TIMEOUTS.request);
       this.requestWaiters.set(requestId, { resolve, timer });
       if (!this.send({ ...msg, requestId })) {
         clearTimeout(timer);
@@ -581,7 +588,7 @@ export class ChatClient {
       const timer = setTimeout(() => {
         this.sendWaiters.delete(clientId);
         resolve('timeout');
-      }, ACCEPT_TIMEOUT_MS);
+      }, TIMEOUTS.accept);
       this.sendWaiters.set(clientId, { resolve, timer });
       if (!this.send(msg)) {
         clearTimeout(timer);
@@ -1019,8 +1026,12 @@ export class ChatClient {
   // ---------- envio ----------
 
   // Usa el temporizador que tenga la conversacion en ese momento
+  // La hora de mis mensajes siempre avanza, aunque se creen en el mismo milisegundo (asi el orden es exacto)
+  private lastOutgoingAt = 0;
+
   private newOutgoing(peer: string, kind: ChatMessage['kind'], body: string, extra: Partial<ChatMessage> = {}): ChatMessage {
-    const now = Date.now();
+    const now = Math.max(Date.now(), this.lastOutgoingAt + 1);
+    this.lastOutgoingAt = now;
     const ttl = this.state.timers[peer] || 0;
     return {
       id: newMessageId(), peer, fromMe: true, kind, body, media: null, mediaFile: null, downloadState: 'none', duration: null,
@@ -1200,7 +1211,7 @@ export class ChatClient {
           }
           let result: ItemResult;
           try {
-            result = await withTimeout(this.sendOutboxItem(store, item), ITEM_TIMEOUT_MS, 'Se agotó el tiempo al enviar');
+            result = await withTimeout(this.sendOutboxItem(store, item), TIMEOUTS.item, 'Se agotó el tiempo al enviar');
           } catch (e) {
             await store.setOutboxError(item.id, item.attempts + 1, String((e as Error)?.message ?? e));
             result = 'retry';
@@ -1317,7 +1328,7 @@ export class ChatClient {
       this.flushRetryTimer = null;
       this.flush();
       this.runUploads();
-    }, 15_000);
+    }, TIMEOUTS.retry);
   }
 
   private async sendOutboxItem(store: Store, item: OutboxItem): Promise<ItemResult> {

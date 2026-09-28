@@ -21,8 +21,8 @@ const MEDIA_DIR = `${FileSystem.documentDirectory}media/`;
 const CACHE_DIR = `${FileSystem.cacheDirectory}mc/`;
 
 const EXTENSIONS: Record<MediaKind, string> = { image: 'jpg', video: 'mp4', voice: 'm4a' };
-const UPLOAD_TIMEOUT_MS = 90_000;
-const DOWNLOAD_TIMEOUT_MS = 120_000;
+// Las pruebas automaticas los acortan
+export const MEDIA_TIMEOUTS = { upload: 90_000, download: 120_000 };
 
 // fetch no tiene limite de tiempo: sin esto una subida colgada detenia la app para siempre
 export function withTimeout<T>(promise: Promise<T>, ms: number, message: string): Promise<T> {
@@ -87,7 +87,7 @@ export async function uploadMedia(mediaFile: string, media: MediaRef, auth: Medi
       uploadType: FileSystem.FileSystemUploadType.BINARY_CONTENT,
       headers: { ...authHeaders(auth), 'Content-Type': 'application/octet-stream' },
     }),
-    UPLOAD_TIMEOUT_MS,
+    MEDIA_TIMEOUTS.upload,
     'La subida del archivo tardó demasiado',
   );
   if (result.status !== 200) throw new Error(`El servidor rechazó el archivo (HTTP ${result.status}${result.body ? ': ' + result.body.slice(0, 80) : ''})`);
@@ -103,7 +103,7 @@ export async function downloadMedia(messageId: string, media: MediaRef, auth: Me
   const mediaFile = `${MEDIA_DIR}${messageId}.enc`;
   const result = await withTimeout(
     FileSystem.downloadAsync(mediaUrl(media, path), mediaFile, { headers: authHeaders(auth) }),
-    DOWNLOAD_TIMEOUT_MS,
+    MEDIA_TIMEOUTS.download,
     'La descarga del archivo tardó demasiado',
   );
   if (result.status !== 200) {

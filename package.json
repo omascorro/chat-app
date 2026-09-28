@@ -45,6 +45,8 @@
   },
   "devDependencies": {
     "@types/react": "~19.2.2",
+    "pg-mem": "^3.0.14",
+    "tsx": "^4.23.15",
     "typescript": "~6.0.3"
   },
   "scripts": {
@@ -54,7 +56,9 @@
     "web": "expo start --web",
     "lint": "expo lint",
     "test": "npx --yes tsx tests/crypto.test.ts",
-    "update": "npx --yes eas-cli@latest update --channel preview --environment preview --message"
+    "update": "npx --yes eas-cli@latest update --channel preview --environment preview --message",
+    "test:client": "tsx tests/client.test.ts",
+    "test:all": "npm test && npm run test:client"
   },
   "private": true
 }

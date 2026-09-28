@@ -164,7 +164,7 @@ export class Store {
 
   async getMessages(peer: string, limit = 500): Promise<ChatMessage[]> {
     const rows = await this.db.getAllAsync<MessageRow>(
-      'SELECT * FROM (SELECT * FROM messages WHERE peer = ? ORDER BY sent_at DESC, rowid DESC LIMIT ?) ORDER BY sent_at ASC',
+      'SELECT * FROM (SELECT *, rowid AS arrival FROM messages WHERE peer = ? ORDER BY sent_at DESC, rowid DESC LIMIT ?) ORDER BY sent_at ASC, arrival ASC',
       peer, limit,
     );
     return rows.map(rowToMessage);
