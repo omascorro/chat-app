@@ -3,6 +3,7 @@ import { useCallback, useEffect, useState } from 'react';
 import { ActivityIndicator, Alert, FlatList, Image, Text, TouchableOpacity, View } from 'react-native';
 import { client } from '../../lib/client';
 import { cutOutSubject } from '../../lib/cutout';
+import { deleteFile, deleteIfAppFile } from '../../lib/media';
 import { Colors } from './theme';
 import { ChatStyles } from './useChatTheme';
 
@@ -47,16 +48,26 @@ export function StickerPanel({ epoch, onSend, styles, colors }: {
     let failedCut: string | null = null;
     try {
       for (const asset of assets) {
+        try {
         if (cut) {
           const cutout = await cutOutSubject(asset.uri);
           if ('uri' in cutout) {
-            await client.addStickerFromImage(cutout.uri);
+            try {
+              await client.addStickerFromImage(cutout.uri);
+            } finally {
+              // El recorte queda SIN CIFRAR donde lo dejo la libreria: se borra en cuanto esta guardado (cifrado)
+              await deleteFile(cutout.uri);
+            }
             continue;
           }
           failedCut = cutout.error;
         }
         // Sin recorte (o si no se pudo recortar): la imagen completa
         await client.addStickerFromImage(asset.uri, asset.width, asset.height);
+        } finally {
+          // La copia sin cifrar que dejo el selector no se queda en el telefono
+          await deleteIfAppFile(asset.uri);
+        }
       }
       load();
       if (failedCut) Alert.alert('Algunas se agregaron sin recortar', failedCut);

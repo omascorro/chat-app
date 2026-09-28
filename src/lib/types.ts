@@ -12,6 +12,7 @@ export type MediaRef = {
   nonce: string;
   path?: string;
   url?: string;
+  pad?: 1; // el contenido cifrado lleva relleno para ocultar el tamaño real (ver media.ts)
 };
 
 export type ChatMessage = {
@@ -76,6 +77,7 @@ export type Payload =
     }
   | { t: 'timer'; seconds: number }
   | { t: 'pin'; id: string; pinned: boolean }
+  | { t: 'pk'; key: string } // llave para descifrar la foto de perfil de quien lo manda
   | { t: 'nk'; key: string } // llave de vista previa de las notificaciones de quien lo manda
   | { t: 'clear'; upTo: number } // vaciar el chat para los dos (mensajes enviados hasta esa hora)
   | { t: 'viewed'; id: string }

@@ -20,8 +20,12 @@ async function freePort(): Promise<number> {
 }
 
 // Supabase Storage falso: guarda en memoria lo que sube el servidor
+// Archivos que el servidor pidio borrar a Supabase
+export const deletedObjects = new Set<string>();
+
 function fakeStorage(port: number) {
   const stored = new Map<string, Buffer>();
+  deletedObjects.clear();
   http
     .createServer((req, res) => {
       const up = req.url!.match(/^\/storage\/v1\/object\/(videos|voices)\/(.+)$/);
@@ -40,7 +44,17 @@ function fakeStorage(port: number) {
         if (!data) return res.writeHead(400).end('{}');
         return res.writeHead(200, { 'content-length': data.length }).end(data);
       }
-      if (req.method === 'DELETE') return res.writeHead(200).end('[]');
+      const del = req.url!.match(/^\/storage\/v1\/object\/(videos|voices)$/);
+      if (req.method === 'DELETE' && del) {
+        // Se anota lo borrado (sin quitarlo del mapa, para poder revisar los tamaños despues)
+        const chunks: Buffer[] = [];
+        req.on('data', (c) => chunks.push(c));
+        req.on('end', () => {
+          for (const p of JSON.parse(Buffer.concat(chunks).toString() || '{}').prefixes ?? []) deletedObjects.add(`${del[1]}/${p}`);
+          res.writeHead(200).end('[]');
+        });
+        return;
+      }
       if (req.method === 'POST' && req.url!.startsWith('/storage/v1/object/list/')) return res.writeHead(200).end('[]');
       res.writeHead(404).end();
     })

@@ -117,6 +117,33 @@ const commands: Record<string, (...args: any[]) => Promise<unknown>> = {
   async sentMessages() {
     return sent;
   },
+  // Descifra una foto/archivo tal como la veria el usuario y la devuelve en base64
+  async decryptMedia(peer: string, id: string) {
+    const { decryptToCache } = require('../../src/lib/media') as typeof import('../../src/lib/media');
+    await client.openConversation(peer);
+    const m = client.getSnapshot().messages.find((x) => x.id === id);
+    if (!m?.mediaFile || !m.media) throw new Error('sin archivo');
+    const fs = require('node:fs') as typeof import('node:fs');
+    const uri = await decryptToCache(m.id, 'image', m.mediaFile, m.media);
+    return fs.readFileSync(decodeURIComponent(uri.replace(/^file:\/\//, ''))).toString('base64');
+  },
+  // Intenta bajar un archivo del servidor con la sesion de este telefono; devuelve el codigo HTTP
+  async fetchMedia(bucket: string, path: string) {
+    const { SERVER_HTTP_URL } = require('../../src/lib/config') as typeof import('../../src/lib/config');
+    const auth = (client as any).mediaAuth();
+    const res = await fetch(`${SERVER_HTTP_URL}/media/${bucket}/${path}`, { headers: { Authorization: `Bearer ${auth.token}`, 'X-Username': auth.username } });
+    return res.status;
+  },
+  async mediaOf(peer: string, id: string) {
+    await client.openConversation(peer);
+    return client.getSnapshot().messages.find((x) => x.id === id)?.media ?? null;
+  },
+  async prop(name: string) {
+    return (client as any)[name];
+  },
+  async testPng() {
+    return PNG.toString('base64');
+  },
   async deviceKey() {
     const { getDeviceKey } = require('../../src/lib/preview') as typeof import('../../src/lib/preview');
     const key = await getDeviceKey();

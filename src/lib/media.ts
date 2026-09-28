@@ -60,15 +60,38 @@ export async function deleteFile(uri: string | null | undefined) {
 }
 
 // Cifra un archivo recien elegido/grabado, guarda la copia cifrada y borra el original temporal
+// ---- Relleno para ocultar el tamaño real ----
+// El servidor y Supabase solo ven el tamaño del archivo cifrado. Sin relleno, el tamaño exacto puede delatar que
+// es (como hace Signal, se redondea hacia arriba en escalones). Formato: [largo real, 4 bytes][datos][ceros].
+export function paddedLength(length: number): number {
+  const n = length + 4;
+  const step = n <= 256 * 1024 ? 16 * 1024 : n <= 4 * 1024 * 1024 ? 128 * 1024 : 1024 * 1024;
+  return Math.ceil(n / step) * step;
+}
+
+export function pad(data: Uint8Array): Uint8Array {
+  const out = new Uint8Array(paddedLength(data.length));
+  new DataView(out.buffer).setUint32(0, data.length);
+  out.set(data, 4);
+  return out;
+}
+
+export function unpad(data: Uint8Array): Uint8Array {
+  if (data.length < 4) throw new Error('Archivo danado');
+  const length = new DataView(data.buffer, data.byteOffset, data.byteLength).getUint32(0);
+  if (length > data.length - 4) throw new Error('Archivo danado');
+  return data.slice(4, 4 + length);
+}
+
 export async function importPlainFile(messageId: string, plainUri: string, kind: MediaKind, deleteOriginal: boolean): Promise<{ media: MediaRef; mediaFile: string }> {
   const key = nacl.randomBytes(32);
   const nonce = nacl.randomBytes(24);
-  const cipher = nacl.secretbox(await readBytes(plainUri), nonce, key);
+  const cipher = nacl.secretbox(pad(await readBytes(plainUri)), nonce, key);
   await ensureDir(MEDIA_DIR);
   const mediaFile = `${MEDIA_DIR}${messageId}.enc`;
   await writeBytes(mediaFile, cipher);
   if (deleteOriginal) await deleteIfAppFile(plainUri);
-  return { media: { bucket: bucketFor(kind), key: toB64(key), nonce: toB64(nonce) }, mediaFile };
+  return { media: { bucket: bucketFor(kind), key: toB64(key), nonce: toB64(nonce), pad: 1 }, mediaFile };
 }
 
 // Solo se borran copias dentro de las carpetas de la app, nunca un archivo de la galeria
@@ -78,20 +101,20 @@ export async function deleteIfAppFile(uri: string) {
 }
 
 // Sube la copia cifrada, con un nombre aleatorio que no dice nada del mensaje. El sistema del telefono la manda
-// directo desde el archivo (sin cargarla entera en memoria).
-export async function uploadMedia(mediaFile: string, media: MediaRef, auth: MediaAuth): Promise<MediaRef> {
+// directo desde el archivo (sin cargarla entera en memoria). El servidor anota para quien es: nadie mas lo puede bajar.
+export async function uploadMedia(mediaFile: string, media: MediaRef, auth: MediaAuth, recipient?: string): Promise<MediaRef> {
   const path = `${randomHex(16)}.bin`;
   const result = await withTimeout(
     FileSystem.uploadAsync(mediaUrl(media, path), mediaFile, {
       httpMethod: 'PUT',
       uploadType: FileSystem.FileSystemUploadType.BINARY_CONTENT,
-      headers: { ...authHeaders(auth), 'Content-Type': 'application/octet-stream' },
+      headers: { ...authHeaders(auth), 'Content-Type': 'application/octet-stream', ...(recipient ? { 'X-Recipient': recipient } : {}) },
     }),
     MEDIA_TIMEOUTS.upload,
     'La subida del archivo tardó demasiado',
   );
   if (result.status !== 200) throw new Error(`El servidor rechazó el archivo (HTTP ${result.status}${result.body ? ': ' + result.body.slice(0, 80) : ''})`);
-  return { bucket: media.bucket, key: media.key, nonce: media.nonce, path };
+  return { bucket: media.bucket, key: media.key, nonce: media.nonce, ...(media.pad ? { pad: 1 as const } : {}), path };
 }
 
 // Descarga el archivo cifrado, comprueba que descifra bien y lo guarda tal cual (cifrado)
@@ -127,8 +150,10 @@ export function decryptToCache(messageId: string, kind: MediaKind, mediaFile: st
   const job = (async () => {
     const info = await FileSystem.getInfoAsync(cacheUri);
     if (info.exists) return cacheUri;
-    const plain = nacl.secretbox.open(await readBytes(mediaFile), fromB64(media.nonce), fromB64(media.key));
-    if (!plain) throw new Error('No se pudo descifrar el archivo local');
+    const opened = nacl.secretbox.open(await readBytes(mediaFile), fromB64(media.nonce), fromB64(media.key));
+    if (!opened) throw new Error('No se pudo descifrar el archivo local');
+    // Los archivos de antes del relleno no lo llevan
+    const plain = media.pad ? unpad(opened) : opened;
     await ensureDir(CACHE_DIR);
     await writeBytes(cacheUri, plain);
     return cacheUri;
@@ -156,6 +181,26 @@ export async function removeFromCache(messageId: string) {
 
 export async function wipeCache() {
   await deleteFile(CACHE_DIR);
+}
+
+// Al arrancar la app: borra copias SIN CIFRAR que otras librerias dejan si algo se interrumpe a medias
+// (el selector de fotos/camara, el reductor de imagenes y el recorte de stickers). Solo al arrancar: durante el
+// uso, el selector puede estar escribiendo ahi.
+export async function wipePlaintextLeftovers() {
+  if (FileSystem.cacheDirectory) {
+    await deleteFile(`${FileSystem.cacheDirectory}ImagePicker`);
+    await deleteFile(`${FileSystem.cacheDirectory}ImageManipulator`);
+  }
+  // En Android el recorte de stickers deja el PNG en la carpeta principal de la app; nada nuestro vive ahi suelto
+  const doc = FileSystem.documentDirectory;
+  if (!doc) return;
+  try {
+    for (const name of await FileSystem.readDirectoryAsync(doc)) {
+      if (/\.png$/i.test(name)) await deleteFile(`${doc}${name}`);
+    }
+  } catch {
+    // carpeta no disponible
+  }
 }
 
 // Boton de panico: todos los archivos (cifrados y temporales) de la app

@@ -42,10 +42,12 @@ import {
   uploadMedia,
   wipeAllMedia,
   wipeCache,
+  wipePlaintextLeftovers,
   withTimeout,
   writeStickerToCache,
 } from './media';
 import { prepareStickerImage, stickerIdFor } from './stickers';
+import { decryptPicture, encryptPicture, isEncryptedPicture, newProfileKey } from './profilePhoto';
 import { migrateLegacyData } from './migrate';
 import { ChatMessage, Contact, formatTtl, MediaKind, Payload } from './types';
 
@@ -161,6 +163,8 @@ export class ChatClient {
   private downloadAttempts = new Map<string, number>();
   private sweepTimer: ReturnType<typeof setInterval> | null = null;
   private serverUsers: ServerUser[] = [];
+  private serverMyPicture: string | null = null; // como la guarda el servidor (cifrada o, antes, sin cifrar)
+  private migratingPicture = false;
   private appState: AppStateStatus = AppState.currentState;
   private pushRegistered = false;
   private booted = false;
@@ -187,6 +191,7 @@ export class ChatClient {
     if (this.booted) return;
     this.booted = true;
     await wipeCache();
+    await wipePlaintextLeftovers().catch(() => {});
     const typingSetting = await AsyncStorage.getItem('typing_indicators').catch(() => null);
     if (typingSetting === 'off') this.setState({ typingEnabled: false });
 
@@ -549,7 +554,7 @@ export class ChatClient {
         return;
       case 'user-list':
         this.serverUsers = Array.isArray(data.users) ? data.users : [];
-        if (data.me) this.setState({ myProfilePicture: data.me.profilePicture || null });
+        if (data.me) this.serverMyPicture = typeof data.me.profilePicture === 'string' ? data.me.profilePicture : null;
         this.enqueueInbound(() => this.refreshContacts());
         return;
       case 'message':
@@ -668,7 +673,7 @@ export class ChatClient {
       contacts.push({
         username: u.username,
         online: !!u.online,
-        profilePicture: u.profilePicture || null,
+        profilePicture: await this.openPicture(store, u.username, u.profilePicture),
         identity: keys.seen,
         identityChanged: !!keys.pinned && !!keys.seen && !sameIdentity(keys.pinned, keys.seen),
         verified: keys.verified && sameIdentity(keys.pinned, keys.seen),
@@ -676,7 +681,42 @@ export class ChatClient {
       });
     }
     contacts.sort((a, b) => Number(b.online) - Number(a.online) || a.username.localeCompare(b.username));
-    this.setState({ contacts });
+    this.setState({ contacts, myProfilePicture: await this.openPicture(store, null, this.serverMyPicture) });
+    await this.shareProfileKey(store, contacts).catch((e) => log('No se pudo compartir la llave de perfil:', e));
+    // Mi foto de antes se guardo sin cifrar en el servidor: se sube otra vez, ya cifrada
+    if (this.serverMyPicture && !isEncryptedPicture(this.serverMyPicture) && !this.migratingPicture) {
+      this.migratingPicture = true;
+      this.updateProfilePicture(this.serverMyPicture).catch((e) => log('No se pudo cifrar la foto de perfil:', e));
+    }
+  }
+
+  private async profileKey(store: Store): Promise<Uint8Array> {
+    const saved = fromB64Safe((await store.getKv('profile_key')) ?? '');
+    if (saved?.length === 32) return saved;
+    const key = newProfileKey();
+    await store.setKv('profile_key', toB64(key));
+    return key;
+  }
+
+  // peer null = mi propia foto. Las fotos viejas sin cifrar se muestran tal cual.
+  private async openPicture(store: Store, peer: string | null, value: string | null | undefined): Promise<string | null> {
+    if (!value) return null;
+    if (!isEncryptedPicture(value)) return value;
+    const key = peer ? fromB64Safe((await store.getKv(`peer_pk:${peer}`)) ?? '') : await this.profileKey(store);
+    return decryptPicture(key?.length === 32 ? key : null, value);
+  }
+
+  // Cada contacto recibe mi llave de perfil por el canal cifrado (una vez, o de nuevo si cambia su telefono)
+  private async shareProfileKey(store: Store, contacts: Contact[]) {
+    const key = toB64(await this.profileKey(store));
+    let queued = false;
+    for (const c of contacts) {
+      if (!c.identity || c.identityChanged || (await store.getKv(`pk_sent:${c.username}`)) === key) continue;
+      await store.addOutbox({ id: newMessageId(), peer: c.username, payload: JSON.stringify({ t: 'pk', key }), silent: true, createdAt: Date.now() });
+      await store.setKv(`pk_sent:${c.username}`, key);
+      queued = true;
+    }
+    if (queued) this.flush();
   }
 
   private async noteIdentityFromPreKey(store: Store, peer: string, pk: PreKeyInfo) {
@@ -686,8 +726,9 @@ export class ChatClient {
       await store.saveContactKeys(peer, { pinned: identity, seen: identity, verified: false });
     } else if (!sameIdentity(keys.seen, identity)) {
       await store.saveContactKeys(peer, { ...keys, seen: identity });
-      // Su telefono es nuevo: hay que volver a mandarle mi llave de vista previa
+      // Su telefono es nuevo: hay que volver a mandarle mis llaves de vista previa y de perfil
       await store.deleteKv(`nk_sent:${peer}`);
+      await store.deleteKv(`pk_sent:${peer}`);
     }
   }
 
@@ -695,6 +736,7 @@ export class ChatClient {
     const store = this.store;
     if (!store) return;
     await store.deleteKv(`nk_sent:${peer}`);
+    await store.deleteKv(`pk_sent:${peer}`);
     const keys = await store.getContactKeys(peer);
     if (!keys.seen) return;
     await store.saveContactKeys(peer, { pinned: keys.seen, seen: keys.seen, verified: false });
@@ -724,6 +766,7 @@ export class ChatClient {
     const store = this.store;
     if (!store) return;
     await store.deleteKv(`nk_sent:${peer}`);
+    await store.deleteKv(`pk_sent:${peer}`);
     await this.withLock(peer, () => store.deleteSessions(peer));
     await this.addSystemMessage(peer, 'Reiniciaste la sesión cifrada con este contacto.');
   }
@@ -738,8 +781,12 @@ export class ChatClient {
     this.send({ type: 'remove-contact', username });
   }
 
-  updateProfilePicture(base64: string) {
-    return this.send({ type: 'update-profile-picture', profilePicture: base64 });
+  // La foto se cifra aqui; el servidor solo guarda bytes ilegibles
+  async updateProfilePicture(base64: string): Promise<boolean> {
+    const store = this.store;
+    if (!store) return false;
+    const encrypted = encryptPicture(await this.profileKey(store), base64);
+    return this.send({ type: 'update-profile-picture', profilePicture: encrypted });
   }
 
   // ---------- conversacion abierta ----------
@@ -925,6 +972,15 @@ export class ChatClient {
       if (typeof p.upTo !== 'number' || p.upTo <= 0) return;
       await this.wipeConversation(store, from, Math.min(p.upTo, now + 5 * 60_000));
       await this.addSystemMessage(from, `${from} vació el chat.`);
+      return;
+    }
+
+    if (p.t === 'pk') {
+      // Llave de perfil del contacto: con ella veo su foto de perfil cifrada
+      if (typeof p.key === 'string' && fromB64Safe(p.key)?.length === 32) {
+        await store.setKv(`peer_pk:${from}`, p.key);
+        await this.refreshContacts();
+      }
       return;
     }
 
@@ -1220,7 +1276,7 @@ export class ChatClient {
       id: m.id,
       kind: m.kind as Exclude<ChatMessage['kind'], 'system'>,
       body: m.body || undefined,
-      media: m.media ? { bucket: m.media.bucket, key: m.media.key, nonce: m.media.nonce } : undefined,
+      media: m.media ? { bucket: m.media.bucket, key: m.media.key, nonce: m.media.nonce, ...(m.media.pad ? { pad: 1 as const } : {}) } : undefined,
       duration: m.duration ?? undefined,
       sentAt: m.sentAt,
       selfDestruct: m.selfDestruct || undefined,
@@ -1346,6 +1402,8 @@ export class ChatClient {
     await this.deleteLocalCopy(store, target, true);
     await this.reloadMessages(peer);
     await this.queuePayload(peer, { t: 'delete', id }, true);
+    // La copia cifrada tampoco se queda en el servidor hasta la limpieza de 14 dias
+    if (target.media?.path) this.send({ type: 'media-done', bucket: target.media.bucket, path: target.media.path });
   }
 
   async deleteForMe(id: string) {
@@ -1489,7 +1547,7 @@ export class ChatClient {
         try {
           const auth = this.mediaAuth();
           if (!auth) break;
-          payload.media = await uploadMedia(message.mediaFile, payload.media, auth);
+          payload.media = await uploadMedia(message.mediaFile, payload.media, auth, message.peer);
           await store.updateOutbox(item.id, JSON.stringify(payload), item.attempts);
           await store.setMedia(message.id, payload.media, message.mediaFile, 'done');
           uploadedSomething = true;

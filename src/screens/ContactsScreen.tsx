@@ -1,3 +1,4 @@
+import * as ImageManipulator from 'expo-image-manipulator';
 import * as ImagePicker from 'expo-image-picker';
 import { StatusBar } from 'expo-status-bar';
 import { useEffect, useState } from 'react';
@@ -8,6 +9,7 @@ import { PromptModal } from '../components/chat/Modals';
 import { SearchResults } from '../components/chat/SearchResults';
 import { useChatTheme } from '../components/chat/useChatTheme';
 import { client, ClientState } from '../lib/client';
+import { deleteIfAppFile } from '../lib/media';
 import { ChatMessage } from '../lib/types';
 
 export function ContactsScreen({ state, onOpenSettings }: { state: ClientState; onOpenSettings: () => void }) {
@@ -35,13 +37,24 @@ export function ContactsScreen({ state, onOpenSettings }: { state: ClientState; 
     if (!permission.granted) return;
     const result = await ImagePicker.launchImageLibraryAsync({
       mediaTypes: 'images',
-      quality: 0.3,
-      base64: true,
+      quality: 1,
       allowsEditing: true,
       aspect: [1, 1],
     });
-    if (result.canceled || !result.assets?.[0]?.base64) return;
-    if (!client.updateProfilePicture(result.assets[0].base64)) Alert.alert('Sin conexión', 'Intenta de nuevo cuando haya conexión.');
+    if (result.canceled || !result.assets?.[0]) return;
+    const picked = result.assets[0].uri;
+    // Se achica aqui (el servidor ya no puede: la foto le llega cifrada) y al recodificar se quitan los datos EXIF/GPS
+    let small: ImageManipulator.ImageResult;
+    try {
+      small = await ImageManipulator.manipulateAsync(picked, [{ resize: { width: 160, height: 160 } }], { compress: 0.75, format: ImageManipulator.SaveFormat.JPEG, base64: true });
+    } catch {
+      Alert.alert('No se pudo usar la foto', 'Intenta con otra imagen.');
+      return;
+    } finally {
+      await deleteIfAppFile(picked);
+    }
+    await deleteIfAppFile(small.uri);
+    if (!small.base64 || !(await client.updateProfilePicture(small.base64))) Alert.alert('Sin conexión', 'Intenta de nuevo cuando haya conexión.');
   };
 
   const addContact = async (username: string) => {

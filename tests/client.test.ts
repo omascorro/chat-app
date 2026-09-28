@@ -1,7 +1,7 @@
 // Pruebas de la app completa: dos telefonos (procesos con el ChatClient real) hablando por el servidor real.
 // Uso: npm run test:client   (necesita la carpeta chat-backend al lado de chat-app, o AETERNA_BACKEND_DIR)
 import assert from 'node:assert/strict';
-import { Device, startServer, waitFor } from './harness/world';
+import { deletedObjects, Device, startServer, waitFor } from './harness/world';
 
 type Msg = {
   id: string; fromMe: boolean; kind: string; body: string; status: string; deleted: boolean; editedAt: number | null;
@@ -13,6 +13,7 @@ const tests: { name: string; fn: () => Promise<void> }[] = [];
 const test = (name: string, fn: () => Promise<void>) => tests.push({ name, fn });
 
 let serverUrl = '';
+let storage: Map<string, Buffer> = new Map(); // lo que el servidor guarda en Supabase (falso)
 let counter = 0;
 
 // Dos telefonos nuevos, registrados y con el otro como contacto
@@ -229,6 +230,11 @@ test('borrar una foto: para todos la quita de los dos telefonos (con su archivo)
   await a.run('sendImage', nb);
   const photos = (await waitFor('beto descarga las 2 fotos', () => msgs(b, na), (l) => l.filter((m) => m.kind === 'image' && m.hasFile).length === 2))
     .filter((m) => m.kind === 'image');
+  // La foto que ve beto es identica a la original (el relleno se quita al descifrar)
+  assert.equal(await b.run('decryptMedia', na, photos[1].id), await b.run('testPng'), 'la foto se descifra igual a la original');
+  // Lo que guarda el servidor no revela el tamaño real: mide un escalon de relleno (16 KB) mas el cifrado
+  const sizes = [...storage.values()].map((v) => v.length);
+  assert.ok(sizes.length > 0 && sizes.every((n) => (n - 16) % (16 * 1024) === 0), `tamaños con relleno: ${sizes.join(', ')}`);
   await a.run('deleteForEveryone', nb, photos[0].id);
   await waitFor('se borra en beto con su archivo', () => msgs(b, na), (l) => l.some((m) => m.id === photos[0].id && m.deleted && !m.hasFile));
   const atA = await msgs(a, nb);
@@ -237,6 +243,44 @@ test('borrar una foto: para todos la quita de los dos telefonos (con su archivo)
   assert.ok(!(await msgs(b, na)).some((m) => m.id === photos[1].id), 'beto la borro para el');
   await sleep(500);
   assert.ok((await msgs(a, nb)).some((m) => m.id === photos[1].id && !m.deleted && m.hasFile), 'ana la conserva');
+  await Promise.all([a.close(), b.close()]);
+});
+
+test('las fotos solo las bajan quien las mando y quien las recibe; borrar para todos las quita del servidor', async () => {
+  const [a, b, na, nb] = await pair();
+  const c = new Device(`carlos${counter}`, serverUrl);
+  await c.ready;
+  await c.run('boot');
+  await c.run('register', `carlos${counter}`, 'clave-segura-3');
+  await b.run('offline', true); // beto no la descarga todavia (al descargarla se borra del servidor)
+  await a.run('sendImage', nb);
+  const photo = await waitFor('la foto se sube', () => msgs(a, nb), (l) => l.some((m) => m.kind === 'image' && m.status !== 'pending'));
+  const id = photo.find((m) => m.kind === 'image')!.id;
+  const media = await a.run<any>('mediaOf', nb, id);
+  assert.ok(media?.path, 'la foto tiene su archivo en el servidor');
+  assert.equal(await c.run('fetchMedia', media.bucket, media.path), 404, 'un tercero con sesion valida no la puede bajar');
+  assert.equal(await a.run('fetchMedia', media.bucket, media.path), 200, 'quien la mando si');
+  await c.run('call', 'send', { type: 'media-done', bucket: media.bucket, path: media.path });
+  await sleep(300);
+  assert.ok(!deletedObjects.has(`${media.bucket}/${media.path}`), 'un tercero tampoco la puede borrar');
+  await a.run('deleteForEveryone', nb, id);
+  await waitFor('el servidor borra el archivo', async () => deletedObjects.has(`${media.bucket}/${media.path}`), (v) => v);
+  await b.run('offline', false);
+  await waitFor('beto ve la foto borrada', () => msgs(b, na), (l) => l.some((m) => m.id === id && m.deleted));
+  await Promise.all([a.close(), b.close(), c.close()]);
+});
+
+test('foto de perfil: el servidor solo guarda la version cifrada y el contacto la ve igual (y las viejas se cifran solas)', async () => {
+  const [a, b, na] = await pair();
+  const png = await a.run<string>('testPng');
+  assert.ok(await a.run('call', 'updateProfilePicture', png), 'se manda');
+  const users = await waitFor('beto recibe la foto cifrada', () => b.run<any[]>('prop', 'serverUsers'), (l) => /^e1:/.test(l.find((u) => u.username === na)?.profilePicture ?? ''));
+  assert.ok(!users.find((u) => u.username === na).profilePicture.includes(png.slice(8, 40)), 'el servidor no tiene la foto legible');
+  await waitFor('beto la descifra', () => b.run<any>('state'), (s) => s.contacts.find((c: any) => c.username === na)?.profilePicture === png);
+  // Una foto vieja (subida sin cifrar, como antes) se vuelve a subir cifrada automaticamente
+  const before = users.find((u) => u.username === na).profilePicture;
+  await a.run('call', 'send', { type: 'update-profile-picture', profilePicture: png });
+  await waitFor('ana la cifra de nuevo', () => b.run<any[]>('prop', 'serverUsers'), (l) => { const p = l.find((u) => u.username === na)?.profilePicture ?? ''; return /^e1:/.test(p) && p !== before; }, 15000);
   await Promise.all([a.close(), b.close()]);
 });
 
@@ -305,7 +349,9 @@ test('vista previa de notificaciones: cifrada con la llave del destinatario, el 
 });
 
 (async () => {
-  const { url } = await startServer();
+  const started = await startServer();
+  const url = started.url;
+  storage = started.storage;
   console.log = () => {}; // el servidor escribe mucho; los resultados van por stdout directo
   const out = (s: string) => process.stdout.write(s + '\n');
   serverUrl = url;

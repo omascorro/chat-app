@@ -22,6 +22,25 @@ import { ChatMessage, formatTtl, shortTtl, TIMER_OPTIONS } from '../lib/types';
 import { ContactInfoScreen } from './ContactInfoScreen';
 
 
+const MAX_PHOTO_WIDTH = 1600;
+
+// Vuelve a codificar la foto como JPEG nuevo (sin EXIF) y la reduce si es muy grande; null si no se pudo
+async function reencodeImage(uri: string, width?: number): Promise<string | null> {
+  const attempts: ImageManipulator.Action[][] = [
+    width && width > MAX_PHOTO_WIDTH ? [{ resize: { width: MAX_PHOTO_WIDTH } }] : [],
+    [], // segundo intento: sin cambiar el tamaño
+  ];
+  for (const actions of attempts) {
+    try {
+      const result = await ImageManipulator.manipulateAsync(uri, actions, { compress: 0.5, format: ImageManipulator.SaveFormat.JPEG });
+      return result.uri;
+    } catch (e) {
+      log('No se pudo recodificar la imagen:', e);
+    }
+  }
+  return null;
+}
+
 export function ChatScreen({ state, peer }: { state: ClientState; peer: string }) {
   const { isDark, colors, styles } = useChatTheme();
   const appearance = useAppearance();
@@ -184,15 +203,15 @@ export function ChatScreen({ state, peer }: { state: ClientState; peer: string }
 
     let uri = asset.uri;
     if (!isVideo) {
-      try {
-        const manipulated = await ImageManipulator.manipulateAsync(asset.uri, [{ resize: { width: 1600 } }], {
-          compress: 0.5,
-          format: ImageManipulator.SaveFormat.JPEG,
-        });
-        uri = manipulated.uri;
-      } catch (e) {
-        log('No se pudo reducir la imagen, se usa la original:', e);
+      // Las fotos SIEMPRE se vuelven a codificar: asi se eliminan los datos ocultos (EXIF) como la ubicacion GPS,
+      // el modelo del telefono o la fecha. Si no se puede, la foto no se envia.
+      const clean = await reencodeImage(asset.uri, asset.width);
+      if (!clean) {
+        deleteIfAppFile(asset.uri);
+        Alert.alert('No se pudo preparar la foto', 'Por seguridad no se envió: no se pudieron quitar sus datos ocultos (como la ubicación).');
+        return;
       }
+      uri = clean;
     }
     try {
       await client.sendMedia(peer, uri, isVideo ? 'video' : 'image', { replyTo: replyTo?.id ?? null, viewOnce });
