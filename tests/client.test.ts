@@ -270,17 +270,15 @@ test('las fotos solo las bajan quien las mando y quien las recibe; borrar para t
   await Promise.all([a.close(), b.close(), c.close()]);
 });
 
-test('foto de perfil: el servidor solo guarda la version cifrada y el contacto la ve igual (y las viejas se cifran solas)', async () => {
+test('foto de perfil: el contacto la ve, y la que quedo cifrada se restaura sola', async () => {
   const [a, b, na] = await pair();
   const png = await a.run<string>('testPng');
   assert.ok(await a.run('call', 'updateProfilePicture', png), 'se manda');
-  const users = await waitFor('beto recibe la foto cifrada', () => b.run<any[]>('prop', 'serverUsers'), (l) => /^e1:/.test(l.find((u) => u.username === na)?.profilePicture ?? ''));
-  assert.ok(!users.find((u) => u.username === na).profilePicture.includes(png.slice(8, 40)), 'el servidor no tiene la foto legible');
-  await waitFor('beto la descifra', () => b.run<any>('state'), (s) => s.contacts.find((c: any) => c.username === na)?.profilePicture === png);
-  // Una foto vieja (subida sin cifrar, como antes) se vuelve a subir cifrada automaticamente
-  const before = users.find((u) => u.username === na).profilePicture;
-  await a.run('call', 'send', { type: 'update-profile-picture', profilePicture: png });
-  await waitFor('ana la cifra de nuevo', () => b.run<any[]>('prop', 'serverUsers'), (l) => { const p = l.find((u) => u.username === na)?.profilePicture ?? ''; return /^e1:/.test(p) && p !== before; }, 15000);
+  await waitFor('beto ve la foto de ana', () => b.run<any>('state'), (s) => /^[A-Za-z0-9+/]/.test(s.contacts.find((c: any) => c.username === na)?.profilePicture ?? ''));
+  // Como la dejo la version anterior: cifrada en el servidor. Ana la descifra y la sube normal otra vez
+  await a.run('call', 'send', { type: 'update-profile-picture', profilePicture: await a.run('myEncryptedPicture', png) });
+  await waitFor('ana detecta su foto cifrada y la vuelve a subir', () => a.run<boolean>('prop', 'migratingPicture'), (v) => v === true);
+  await waitFor('ana la restaura', () => b.run<any[]>('prop', 'serverUsers'), (l) => { const p = l.find((u) => u.username === na)?.profilePicture ?? ''; return !!p && !/^e1:/.test(p); }, 15000);
   await Promise.all([a.close(), b.close()]);
 });
 

@@ -47,7 +47,7 @@ import {
   writeStickerToCache,
 } from './media';
 import { prepareStickerImage, stickerIdFor } from './stickers';
-import { decryptPicture, encryptPicture, isEncryptedPicture, newProfileKey } from './profilePhoto';
+import { decryptPicture, isEncryptedPicture, newProfileKey } from './profilePhoto';
 import { migrateLegacyData } from './migrate';
 import { ChatMessage, Contact, formatTtl, MediaKind, Payload } from './types';
 
@@ -683,10 +683,14 @@ export class ChatClient {
     contacts.sort((a, b) => Number(b.online) - Number(a.online) || a.username.localeCompare(b.username));
     this.setState({ contacts, myProfilePicture: await this.openPicture(store, null, this.serverMyPicture) });
     await this.shareProfileKey(store, contacts).catch((e) => log('No se pudo compartir la llave de perfil:', e));
-    // Mi foto de antes se guardo sin cifrar en el servidor: se sube otra vez, ya cifrada
-    if (this.serverMyPicture && !isEncryptedPicture(this.serverMyPicture) && !this.migratingPicture) {
-      this.migratingPicture = true;
-      this.updateProfilePicture(this.serverMyPicture).catch((e) => log('No se pudo cifrar la foto de perfil:', e));
+    // Las fotos de perfil volvieron a guardarse como antes (sin cifrar). Si la mia quedo cifrada, se descifra con mi
+    // llave y se sube otra vez normal, para que mis contactos la vuelvan a ver
+    if (isEncryptedPicture(this.serverMyPicture) && !this.migratingPicture) {
+      const plain = await this.openPicture(store, null, this.serverMyPicture);
+      if (plain) {
+        this.migratingPicture = true;
+        this.updateProfilePicture(plain).catch((e) => log('No se pudo restaurar la foto de perfil:', e));
+      }
     }
   }
 
@@ -781,12 +785,8 @@ export class ChatClient {
     this.send({ type: 'remove-contact', username });
   }
 
-  // La foto se cifra aqui; el servidor solo guarda bytes ilegibles
   async updateProfilePicture(base64: string): Promise<boolean> {
-    const store = this.store;
-    if (!store) return false;
-    const encrypted = encryptPicture(await this.profileKey(store), base64);
-    return this.send({ type: 'update-profile-picture', profilePicture: encrypted });
+    return this.send({ type: 'update-profile-picture', profilePicture: base64 });
   }
 
   // ---------- conversacion abierta ----------

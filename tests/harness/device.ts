@@ -141,6 +141,12 @@ const commands: Record<string, (...args: any[]) => Promise<unknown>> = {
   async prop(name: string) {
     return (client as any)[name];
   },
+  // Mi foto cifrada con mi llave de perfil (como la dejo la version anterior de la app)
+  async myEncryptedPicture(base64: string) {
+    const { encryptPicture } = require('../../src/lib/profilePhoto') as typeof import('../../src/lib/profilePhoto');
+    const c = client as any;
+    return encryptPicture(await c.profileKey(c.store), base64);
+  },
   async testPng() {
     return PNG.toString('base64');
   },
