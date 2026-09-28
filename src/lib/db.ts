@@ -200,6 +200,35 @@ export class Store {
     return rows.map(rowToMessage);
   }
 
+  // Vaciar un chat: borra los mensajes enviados hasta `upTo` (sus archivos se borran aparte, ver mediaFilesOf)
+  async clearConversation(peer: string, upTo: number) {
+    await this.db.runAsync('DELETE FROM messages WHERE peer = ? AND sent_at <= ?', peer, upTo);
+  }
+
+  async mediaFilesOf(peer: string, upTo: number): Promise<{ id: string; mediaFile: string | null }[]> {
+    const rows = await this.db.getAllAsync<{ id: string; media_file: string | null }>(
+      'SELECT id, media_file FROM messages WHERE peer = ? AND sent_at <= ? AND media_file IS NOT NULL',
+      peer, upTo,
+    );
+    return rows.map((r) => ({ id: r.id, mediaFile: r.media_file }));
+  }
+
+  // Quita de la cola los mensajes que todavia no salieron hacia `peer` (los avisos de control se quedan)
+  async deletePendingMessagesTo(peer: string): Promise<string[]> {
+    const rows = await this.db.getAllAsync<{ id: string; payload: string }>('SELECT id, payload FROM outbox WHERE peer = ?', peer);
+    const ids = rows
+      .filter((r) => {
+        try {
+          return JSON.parse(r.payload).t === 'msg';
+        } catch {
+          return false;
+        }
+      })
+      .map((r) => r.id);
+    for (const id of ids) await this.db.runAsync('DELETE FROM outbox WHERE id = ?', id);
+    return ids;
+  }
+
   async getAllMessages(): Promise<ChatMessage[]> {
     const rows = await this.db.getAllAsync<MessageRow>('SELECT * FROM messages WHERE kind <> ? ORDER BY sent_at ASC', 'system');
     return rows.map(rowToMessage);

@@ -919,6 +919,15 @@ export class ChatClient {
       return;
     }
 
+    if (p.t === 'clear') {
+      // El otro vacio el chat para los dos: se borra lo que se mando hasta ese momento
+      const now = Date.now();
+      if (typeof p.upTo !== 'number' || p.upTo <= 0) return;
+      await this.wipeConversation(store, from, Math.min(p.upTo, now + 5 * 60_000));
+      await this.addSystemMessage(from, `${from} vació el chat.`);
+      return;
+    }
+
     if (p.t === 'nk') {
       // Llave de vista previa del contacto: con ella le cifro la vista previa de mis mensajes
       if (typeof p.key === 'string' && fromB64Safe(p.key)?.length === 32) await store.setKv(`peer_nk:${from}`, p.key);
@@ -996,6 +1005,30 @@ export class ChatClient {
   async setTypingEnabled(enabled: boolean) {
     await AsyncStorage.setItem('typing_indicators', enabled ? 'on' : 'off').catch(() => {});
     this.setState({ typingEnabled: enabled, typing: enabled ? this.state.typing : {} });
+  }
+
+  // ---------- vaciar chat ----------
+
+  private async wipeConversation(store: Store, peer: string, upTo: number) {
+    for (const f of await store.mediaFilesOf(peer, upTo)) {
+      await deleteFile(f.mediaFile);
+      await removeFromCache(f.id);
+    }
+    await store.clearConversation(peer, upTo);
+    await this.savePins(store, peer, []);
+  }
+
+  // forBoth: tambien se borra en el telefono del otro (recibe el aviso "X vacio el chat")
+  async clearChat(peer: string, forBoth: boolean) {
+    const store = this.store;
+    if (!store) return;
+    const upTo = Date.now();
+    // Lo que todavia no habia salido tampoco se manda
+    for (const id of await store.deletePendingMessagesTo(peer)) await removeFromCache(id);
+    await this.wipeConversation(store, peer, upTo);
+    if (forBoth) await this.queuePayload(peer, { t: 'clear', upTo }, true);
+    await this.addSystemMessage(peer, forBoth ? 'Vaciaste el chat para los dos.' : 'Vaciaste el chat en este teléfono.');
+    await this.afterChange(peer);
   }
 
   // ---------- mensajes fijados ----------

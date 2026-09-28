@@ -223,6 +223,41 @@ test('la busqueda encuentra texto en todas las conversaciones, sin borrados ni a
   await Promise.all([a.close(), b.close()]);
 });
 
+test('vaciar chat: solo en mi telefono, o para los dos (con fotos y fijados)', async () => {
+  const [a, b, na, nb] = await pair();
+  await a.run('sendText', nb, 'mensaje 1');
+  await a.run('sendImage', nb);
+  await b.run('sendText', na, 'respuesta 1');
+  await waitFor('beto tiene todo', () => msgs(b, na), (l) => count(l, 'mensaje 1') === 1 && l.some((m) => m.kind === 'image' && m.hasFile));
+  await waitFor('ana tiene todo', () => msgs(a, nb), (l) => count(l, 'respuesta 1') === 1);
+  const first = (await msgs(a, nb)).find((m) => m.body === 'mensaje 1')!;
+  await a.run('call', 'setPinned', nb, first.id, true);
+
+  // Solo en el telefono de ana
+  await a.run('call', 'clearChat', nb, false);
+  const aAfter = await msgs(a, nb);
+  assert.equal(aAfter.filter((m) => m.kind !== 'system').length, 0, 'ana ya no tiene mensajes');
+  assert.ok(aAfter.some((m) => m.kind === 'system' && /Vaciaste el chat en este/.test(m.body)));
+  assert.deepEqual((await a.run('state')).pins[nb], [], 'sin fijados');
+  await sleep(800);
+  const bStill = await msgs(b, na);
+  assert.equal(count(bStill, 'mensaje 1'), 1, 'beto conserva su historial');
+
+  // Para los dos (desde beto)
+  await b.run('call', 'clearChat', na, true);
+  await waitFor('ana ve el aviso', () => msgs(a, nb), (l) => l.some((m) => m.kind === 'system' && /vació el chat/.test(m.body)));
+  const bAfter = await msgs(b, na);
+  assert.equal(bAfter.filter((m) => m.kind !== 'system').length, 0, 'beto ya no tiene mensajes');
+  assert.ok(!bAfter.some((m) => m.hasFile), 'sin archivos');
+
+  // Lo que llega despues de vaciar se queda
+  await a.run('sendText', nb, 'despues de vaciar');
+  await waitFor('llega', () => msgs(b, na), (l) => count(l, 'despues de vaciar') === 1);
+  await sleep(500);
+  assert.equal(count(await msgs(b, na), 'despues de vaciar'), 1);
+  await Promise.all([a.close(), b.close()]);
+});
+
 // Descifra una vista previa con ChaCha20-Poly1305 estandar (el mismo que usa CryptoKit en la extension del iPhone)
 function openPreview(keyB64: string, data: string): { f: string; b: string } {
   const crypto = require('node:crypto') as typeof import('node:crypto');

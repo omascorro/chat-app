@@ -77,6 +77,7 @@ export type Payload =
   | { t: 'timer'; seconds: number }
   | { t: 'pin'; id: string; pinned: boolean }
   | { t: 'nk'; key: string } // llave de vista previa de las notificaciones de quien lo manda
+  | { t: 'clear'; upTo: number } // vaciar el chat para los dos (mensajes enviados hasta esa hora)
   | { t: 'viewed'; id: string }
   | { t: 'edit'; id: string; body: string; at: number }
   | { t: 'delete'; id: string }

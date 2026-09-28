@@ -21,6 +21,18 @@ export function ContactInfoScreen({ state, peer, onClose }: { state: ClientState
     return () => clearTimeout(timer);
   }, [peer, contact?.identity?.signPub, contact?.identity?.dhPub]);
 
+  const confirmClear = () => {
+    Alert.alert(
+      'Vaciar chat',
+      `Se borran todos los mensajes, fotos, videos y audios de este chat. No se puede deshacer.\n\n"Para los dos" también los borra del teléfono de ${peer}.`,
+      [
+        { text: 'Cancelar', style: 'cancel' },
+        { text: 'Solo en mi teléfono', style: 'destructive', onPress: () => client.clearChat(peer, false) },
+        { text: 'Para los dos', style: 'destructive', onPress: () => client.clearChat(peer, true) },
+      ],
+    );
+  };
+
   const confirmReset = () => {
     Alert.alert(
       'Reiniciar sesión cifrada',
@@ -106,6 +118,9 @@ export function ContactInfoScreen({ state, peer, onClose }: { state: ClientState
           />
 
           <Text style={styles.infoSectionTitle}>AVANZADO</Text>
+          <TouchableOpacity style={styles.secondaryButton} onPress={confirmClear} activeOpacity={0.8}>
+            <Text style={styles.dangerButtonText}>🗑  VACIAR CHAT</Text>
+          </TouchableOpacity>
           <TouchableOpacity style={styles.secondaryButton} onPress={confirmReset} activeOpacity={0.8}>
             <Text style={styles.dangerButtonText}>REINICIAR SESIÓN CIFRADA</Text>
           </TouchableOpacity>
