@@ -64,5 +64,10 @@
     "test:client": "tsx tests/client.test.ts",
     "test:all": "npm test && npm run test:client"
   },
-  "private": true
+  "private": true,
+  "overrides": {
+    "@expo/require-utils": {
+      "typescript": "$typescript"
+    }
+  }
 }
