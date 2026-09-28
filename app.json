@@ -70,13 +70,36 @@
           "useSQLCipher": true
         }
       ],
-      "expo-sharing",
+      [
+        "expo-sharing",
+        {
+          "ios": {
+            "enabled": true,
+            "activationRule": {
+              "supportsImageWithMaxCount": 10,
+              "supportsMovieWithMaxCount": 3
+            }
+          },
+          "android": {
+            "enabled": true,
+            "singleShareMimeTypes": [
+              "image/*",
+              "video/*"
+            ],
+            "multipleShareMimeTypes": [
+              "image/*",
+              "video/*"
+            ]
+          }
+        }
+      ],
       [
         "expo-local-authentication",
         {
           "faceIDPermission": "Permite desbloquear la app con Face ID para proteger tus mensajes."
         }
       ],
+      "./plugins/withShareOnIconAliases",
       [
         "expo-alternate-app-icons",
         [

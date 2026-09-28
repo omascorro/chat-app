@@ -2,6 +2,7 @@
 import 'react-native-get-random-values';
 import * as Notifications from 'expo-notifications';
 import * as ScreenCapture from 'expo-screen-capture';
+import { useIncomingShare } from 'expo-sharing';
 import { useEffect, useState, useSyncExternalStore } from 'react';
 import { ActivityIndicator, Platform, View } from 'react-native';
 import { AppLock } from '../components/AppLock';
@@ -15,6 +16,7 @@ import { AuthScreen, RecoveryCodeScreen } from '../screens/AuthScreen';
 import { ChatScreen } from '../screens/ChatScreen';
 import { ContactsScreen } from '../screens/ContactsScreen';
 import { SettingsScreen } from '../screens/SettingsScreen';
+import { ShareScreen } from '../screens/ShareScreen';
 
 Notifications.setNotificationHandler({
   handleNotification: async () => ({
@@ -31,6 +33,14 @@ export default function App() {
   const [settingsOpen, setSettingsOpen] = useState(false);
 
   useAutoUpdates();
+  // Fotos/videos que me compartieron desde otra app (por ejemplo, justo despues de un pantallazo)
+  const share = useIncomingShare();
+  const shared = share.resolvedSharedPayloads;
+  const hasShare = shared.length > 0;
+  const finishShare = () => {
+    share.clearSharedPayloads();
+    share.refreshSharePayloads();
+  };
 
   useEffect(() => {
     loadAppearance();
@@ -54,6 +64,8 @@ export default function App() {
     screen = <AuthScreen state={state} />;
   } else if (state.phase === 'recovery' && state.recoveryCode) {
     screen = <RecoveryCodeScreen code={state.recoveryCode} />;
+  } else if (hasShare && state.phase === 'ready') {
+    screen = <ShareScreen state={state} payloads={shared} onDone={finishShare} />;
   } else if (state.openPeer) {
     screen = <ChatScreen key={state.openPeer} state={state} peer={state.openPeer} />;
   } else if (settingsOpen) {

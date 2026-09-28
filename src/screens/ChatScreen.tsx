@@ -1,5 +1,4 @@
 import { AudioModule, RecordingPresets, setAudioModeAsync, useAudioRecorder } from 'expo-audio';
-import * as ImageManipulator from 'expo-image-manipulator';
 import * as ImagePicker from 'expo-image-picker';
 import { StatusBar } from 'expo-status-bar';
 import { useEffect, useMemo, useRef, useState } from 'react';
@@ -11,6 +10,7 @@ import { describeMessage, MessageBubble } from '../components/chat/MessageBubble
 import { MessageActions, OptionsModal } from '../components/chat/Modals';
 import { useChatTheme } from '../components/chat/useChatTheme';
 import { client, ClientState } from '../lib/client';
+import { reencodeImage } from '../lib/imageSafety';
 import { log } from '../lib/log';
 import { decryptToCache, deleteIfAppFile, removeFromCache } from '../lib/media';
 import { protectViewOnce } from '../lib/screenProtection';
@@ -21,25 +21,6 @@ import { SwipeToReply } from '../components/chat/SwipeToReply';
 import { ChatMessage, formatTtl, shortTtl, TIMER_OPTIONS } from '../lib/types';
 import { ContactInfoScreen } from './ContactInfoScreen';
 
-
-const MAX_PHOTO_WIDTH = 1600;
-
-// Vuelve a codificar la foto como JPEG nuevo (sin EXIF) y la reduce si es muy grande; null si no se pudo
-async function reencodeImage(uri: string, width?: number): Promise<string | null> {
-  const attempts: ImageManipulator.Action[][] = [
-    width && width > MAX_PHOTO_WIDTH ? [{ resize: { width: MAX_PHOTO_WIDTH } }] : [],
-    [], // segundo intento: sin cambiar el tamaño
-  ];
-  for (const actions of attempts) {
-    try {
-      const result = await ImageManipulator.manipulateAsync(uri, actions, { compress: 0.5, format: ImageManipulator.SaveFormat.JPEG });
-      return result.uri;
-    } catch (e) {
-      log('No se pudo recodificar la imagen:', e);
-    }
-  }
-  return null;
-}
 
 export function ChatScreen({ state, peer }: { state: ClientState; peer: string }) {
   const { isDark, colors, styles } = useChatTheme();
