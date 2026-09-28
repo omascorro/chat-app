@@ -12,6 +12,7 @@ Object.assign(TIMEOUTS, { accept: 1500, request: 1500, heartbeat: 60_000, ping: 
 Object.assign(MEDIA_TIMEOUTS, { upload: 1500, download: 3000 });
 
 const client = new ChatClient();
+const sent: any[] = [];
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
 async function until(pred: () => boolean, ms = 8000, what = 'condicion') {
@@ -102,6 +103,24 @@ const commands: Record<string, (...args: any[]) => Promise<unknown>> = {
     await client.authenticate('login', username, password);
     await until(() => client.getSnapshot().phase === 'ready' || !!client.getSnapshot().authError, 8000, 'login');
     if (client.getSnapshot().authError) throw new Error(client.getSnapshot().authError);
+  },
+  // Guarda lo que la app manda al servidor como direct-message (para revisar la vista previa)
+  async spySends() {
+    const c = client as any;
+    const original = c.send.bind(c);
+    sent.length = 0;
+    c.send = (obj: any) => {
+      if (obj?.type === 'direct-message') sent.push(obj);
+      return original(obj);
+    };
+  },
+  async sentMessages() {
+    return sent;
+  },
+  async deviceKey() {
+    const { getDeviceKey } = require('../../src/lib/preview') as typeof import('../../src/lib/preview');
+    const key = await getDeviceKey();
+    return key ? Buffer.from(key).toString('base64') : null;
   },
   async hangUploads(on: boolean) {
     control.hangUploads = on;

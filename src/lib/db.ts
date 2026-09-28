@@ -377,6 +377,10 @@ export class Store {
     return row ? row.value : null;
   }
 
+  async deleteKv(key: string) {
+    await this.db.runAsync('DELETE FROM kv WHERE key = ?', key);
+  }
+
   async setKv(key: string, value: string) {
     await this.db.runAsync('INSERT OR REPLACE INTO kv (key, value) VALUES (?, ?)', key, value);
   }

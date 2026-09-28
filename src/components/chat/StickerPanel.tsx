@@ -2,6 +2,7 @@ import * as ImagePicker from 'expo-image-picker';
 import { useCallback, useEffect, useState } from 'react';
 import { ActivityIndicator, Alert, FlatList, Image, Text, TouchableOpacity, View } from 'react-native';
 import { client } from '../../lib/client';
+import { cutOutSubject } from '../../lib/cutout';
 import { Colors } from './theme';
 import { ChatStyles } from './useChatTheme';
 
@@ -29,10 +30,36 @@ export function StickerPanel({ epoch, onSend, styles, colors }: {
     if (!permission.granted) return;
     const result = await ImagePicker.launchImageLibraryAsync({ mediaTypes: 'images', quality: 1, allowsMultipleSelection: true, selectionLimit: 10 });
     if (result.canceled || !result.assets?.length) return;
+    const assets = result.assets;
+    Alert.alert(
+      assets.length > 1 ? `Crear ${assets.length} stickers` : 'Crear sticker',
+      '¿Recortar automáticamente a la persona u objeto principal, como en WhatsApp? Se hace dentro de tu teléfono.',
+      [
+        { text: 'Cancelar', style: 'cancel' },
+        { text: 'Usar completa', onPress: () => addAssets(assets, false) },
+        { text: '✂ Recortar', onPress: () => addAssets(assets, true) },
+      ],
+    );
+  };
+
+  const addAssets = async (assets: ImagePicker.ImagePickerAsset[], cut: boolean) => {
     setAdding(true);
+    let failedCut: string | null = null;
     try {
-      for (const asset of result.assets) await client.addStickerFromImage(asset.uri, asset.width, asset.height);
+      for (const asset of assets) {
+        if (cut) {
+          const cutout = await cutOutSubject(asset.uri);
+          if ('uri' in cutout) {
+            await client.addStickerFromImage(cutout.uri);
+            continue;
+          }
+          failedCut = cutout.error;
+        }
+        // Sin recorte (o si no se pudo recortar): la imagen completa
+        await client.addStickerFromImage(asset.uri, asset.width, asset.height);
+      }
       load();
+      if (failedCut) Alert.alert('Algunas se agregaron sin recortar', failedCut);
     } catch (e) {
       Alert.alert('No se pudo agregar', String((e as Error)?.message ?? e));
     } finally {

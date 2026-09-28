@@ -111,6 +111,7 @@ const fileSystem = {
 const secure = new Map<string, string>();
 const secureStore = {
   WHEN_UNLOCKED_THIS_DEVICE_ONLY: 0,
+  AFTER_FIRST_UNLOCK_THIS_DEVICE_ONLY: 1,
   getItemAsync: async (k: string) => secure.get(k) ?? null,
   setItemAsync: async (k: string, v: string) => {
     secure.set(k, v);
@@ -159,8 +160,11 @@ const MOCKS: Record<string, unknown> = {
   'expo-secure-store': secureStore,
   '@react-native-async-storage/async-storage': esm(asyncStorage),
   'expo-constants': esm({ expoConfig: { extra: { eas: { projectId: 'prueba' } } } }),
+  'expo-task-manager': { defineTask: () => {} },
   'expo-notifications': {
     AndroidImportance: { MAX: 5 },
+    registerTaskAsync: async () => {},
+    scheduleNotificationAsync: async () => 'id',
     setNotificationChannelAsync: async () => {},
     getPermissionsAsync: async () => ({ status: 'denied' }),
     requestPermissionsAsync: async () => ({ status: 'denied' }),

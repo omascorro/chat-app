@@ -12,7 +12,14 @@ export function stickerIdFor(base64: string): string {
 }
 
 export async function prepareStickerImage(uri: string, width?: number, height?: number): Promise<{ id: string; base64: string }> {
-  const resize = width && height && height > width ? { height: Math.min(height, STICKER_SIZE) } : { width: Math.min(width || STICKER_SIZE, STICKER_SIZE) };
+  // Si no se conoce el tamaño (por ejemplo, despues del recorte), se mide primero
+  if (!width || !height) {
+    const probe = await ImageManipulator.manipulateAsync(uri, [], { format: ImageManipulator.SaveFormat.PNG });
+    width = probe.width;
+    height = probe.height;
+    await deleteIfAppFile(probe.uri);
+  }
+  const resize = height > width ? { height: Math.min(height, STICKER_SIZE) } : { width: Math.min(width, STICKER_SIZE) };
   const result = await ImageManipulator.manipulateAsync(uri, [{ resize }], { format: ImageManipulator.SaveFormat.PNG, base64: true });
   await deleteIfAppFile(result.uri);
   if (!result.base64) throw new Error('No se pudo leer la imagen');

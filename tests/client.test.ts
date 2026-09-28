@@ -223,6 +223,35 @@ test('la busqueda encuentra texto en todas las conversaciones, sin borrados ni a
   await Promise.all([a.close(), b.close()]);
 });
 
+// Descifra una vista previa con ChaCha20-Poly1305 estandar (el mismo que usa CryptoKit en la extension del iPhone)
+function openPreview(keyB64: string, data: string): { f: string; b: string } {
+  const crypto = require('node:crypto') as typeof import('node:crypto');
+  const raw = Buffer.from(data, 'base64');
+  const d = crypto.createDecipheriv('chacha20-poly1305', Buffer.from(keyB64, 'base64'), raw.subarray(0, 12), { authTagLength: 16 });
+  d.setAuthTag(raw.subarray(raw.length - 16));
+  return JSON.parse(Buffer.concat([d.update(raw.subarray(12, raw.length - 16)), d.final()]).toString('utf8'));
+}
+
+test('vista previa de notificaciones: cifrada con la llave del destinatario, el servidor no la puede leer', async () => {
+  const [a, b, na, nb] = await pair();
+  await b.run('sendText', na, 'hola ana'); // al escribir, beto le comparte su llave de vista previa
+  await waitFor('ana recibe', () => msgs(a, nb), (l) => count(l, 'hola ana') === 1);
+  const bKey = await b.run<string>('deviceKey');
+  assert.ok(bKey, 'beto tiene llave de vista previa');
+  await a.run('spySends');
+  await a.run('sendText', nb, 'nos vemos a las 8');
+  const sent = await waitFor('ana manda con vista previa', () => a.run<any[]>('sentMessages'), (l) => l.some((m) => m.preview));
+  const withPreview = sent.find((m) => m.preview)!;
+  assert.deepEqual(openPreview(bKey!, withPreview.preview), { f: na, b: 'nos vemos a las 8' });
+  assert.ok(!JSON.stringify(withPreview).includes('nos vemos'), 'el texto no viaja en claro');
+  await a.run('setTimer', nb, 30);
+  await a.run('sendText', nb, 'esto es temporal');
+  const again = await waitFor('manda el temporal', () => a.run<any[]>('sentMessages'), (l) => l.filter((m) => m.preview).length >= 2);
+  const last = again.filter((m) => m.preview).pop()!;
+  assert.equal(openPreview(bKey!, last.preview).b, '⏱ Mensaje temporal', 'los temporales no muestran contenido');
+  await Promise.all([a.close(), b.close()]);
+});
+
 (async () => {
   const { url } = await startServer();
   console.log = () => {}; // el servidor escribe mucho; los resultados van por stdout directo

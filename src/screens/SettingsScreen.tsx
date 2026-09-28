@@ -12,6 +12,7 @@ import { BACKUP_PASSWORD_MIN_LENGTH } from '../lib/backup';
 import { client } from '../lib/client';
 import { getAppLockEnabled, setAppLockEnabled } from '../lib/keystore';
 import { deleteFile } from '../lib/media';
+import { getPreviewsEnabled, setPreviewsEnabled } from '../lib/preview';
 import { getScreenCaptureBlocked, setScreenCaptureBlocked } from '../lib/screenProtection';
 
 type PasswordPrompt = { kind: 'export'; includeMedia: boolean } | { kind: 'import'; uri: string } | null;
@@ -28,6 +29,16 @@ export function SettingsScreen({ onClose }: { onClose: () => void }) {
   const [diagnostics, setDiagnostics] = useState<Diagnostics | null>(null);
 
   const [captureBlocked, setCaptureBlocked] = useState(false);
+  const [previewsOn, setPreviewsOn] = useState(true);
+
+  useEffect(() => {
+    getPreviewsEnabled().then(setPreviewsOn);
+  }, []);
+
+  const togglePreviews = async (value: boolean) => {
+    setPreviewsOn(value);
+    await setPreviewsEnabled(value);
+  };
 
   const toggleCaptureBlock = async (value: boolean) => {
     setCaptureBlocked(value);
@@ -176,6 +187,15 @@ export function SettingsScreen({ onClose }: { onClose: () => void }) {
               </Text>
             </View>
             <Switch value={captureBlocked} onValueChange={toggleCaptureBlock} />
+          </View>
+          <View style={styles.settingsRow}>
+            <View style={{ flex: 1, marginRight: 12 }}>
+              <Text style={styles.settingsLabel}>Mostrar contenido en las notificaciones</Text>
+              <Text style={styles.settingsHint}>
+                Quién te escribe y el mensaje, descifrado en tu teléfono (el servidor nunca lo ve). Si lo apagas, solo verás "Tienes un mensaje nuevo".
+              </Text>
+            </View>
+            <Switch value={previewsOn} onValueChange={togglePreviews} />
           </View>
           <View style={styles.settingsRow}>
             <View style={{ flex: 1, marginRight: 12 }}>

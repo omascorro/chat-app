@@ -15,6 +15,13 @@
         "NSFaceIDUsageDescription": "Permite desbloquear la app con Face ID para proteger tus mensajes.",
         "NSCameraUsageDescription": "Permite tomar fotos y videos para enviarlos cifrados.",
         "NSPhotoLibraryUsageDescription": "Permite elegir fotos y videos para enviarlos cifrados."
+      },
+      "appleTeamId": "RMX9T6ZVA9",
+      "entitlements": {
+        "keychain-access-groups": [
+          "$(AppIdentifierPrefix)com.mascorro55.chatapp",
+          "$(AppIdentifierPrefix)com.mascorro55.chatapp.shared"
+        ]
       }
     },
     "android": {
@@ -73,13 +80,62 @@
       [
         "expo-alternate-app-icons",
         [
-          { "name": "Clasico", "ios": "./assets/icons/Clasico-ios.png", "android": { "foregroundImage": "./assets/icons/Clasico-android.png", "backgroundColor": "#128C7E" } },
-          { "name": "Oceano", "ios": "./assets/icons/Oceano-ios.png", "android": { "foregroundImage": "./assets/icons/Oceano-android.png", "backgroundColor": "#1F5F7A" } },
-          { "name": "Grafito", "ios": "./assets/icons/Grafito-ios.png", "android": { "foregroundImage": "./assets/icons/Grafito-android.png", "backgroundColor": "#26262C" } },
-          { "name": "Rosa", "ios": "./assets/icons/Rosa-ios.png", "android": { "foregroundImage": "./assets/icons/Rosa-android.png", "backgroundColor": "#9C3D60" } },
-          { "name": "Notas", "ios": "./assets/icons/Notas-ios.png", "android": { "foregroundImage": "./assets/icons/Notas-android.png", "backgroundColor": "#FFC107" } },
-          { "name": "Clima", "ios": "./assets/icons/Clima-ios.png", "android": { "foregroundImage": "./assets/icons/Clima-android.png", "backgroundColor": "#1E88E5" } },
-          { "name": "Calculadora", "ios": "./assets/icons/Calculadora-ios.png", "android": { "foregroundImage": "./assets/icons/Calculadora-android.png", "backgroundColor": "#1C1C1E" } }
+          {
+            "name": "Clasico",
+            "ios": "./assets/icons/Clasico-ios.png",
+            "android": {
+              "foregroundImage": "./assets/icons/Clasico-android.png",
+              "backgroundColor": "#128C7E"
+            }
+          },
+          {
+            "name": "Oceano",
+            "ios": "./assets/icons/Oceano-ios.png",
+            "android": {
+              "foregroundImage": "./assets/icons/Oceano-android.png",
+              "backgroundColor": "#1F5F7A"
+            }
+          },
+          {
+            "name": "Grafito",
+            "ios": "./assets/icons/Grafito-ios.png",
+            "android": {
+              "foregroundImage": "./assets/icons/Grafito-android.png",
+              "backgroundColor": "#26262C"
+            }
+          },
+          {
+            "name": "Rosa",
+            "ios": "./assets/icons/Rosa-ios.png",
+            "android": {
+              "foregroundImage": "./assets/icons/Rosa-android.png",
+              "backgroundColor": "#9C3D60"
+            }
+          },
+          {
+            "name": "Notas",
+            "ios": "./assets/icons/Notas-ios.png",
+            "android": {
+              "foregroundImage": "./assets/icons/Notas-android.png",
+              "backgroundColor": "#FFC107"
+            }
+          },
+          {
+            "name": "Clima",
+            "ios": "./assets/icons/Clima-ios.png",
+            "android": {
+              "foregroundImage": "./assets/icons/Clima-android.png",
+              "backgroundColor": "#1E88E5"
+            }
+          },
+          {
+            "name": "Calculadora",
+            "ios": "./assets/icons/Calculadora-ios.png",
+            "android": {
+              "foregroundImage": "./assets/icons/Calculadora-android.png",
+              "backgroundColor": "#1C1C1E"
+            }
+          }
         ]
       ],
       [
@@ -89,7 +145,8 @@
           "cameraPermission": "Permite tomar fotos y videos para enviarlos cifrados.",
           "microphonePermission": "Permite grabar el audio de los videos que tomas."
         }
-      ]
+      ],
+      "@bacons/apple-targets"
     ],
     "runtimeVersion": {
       "policy": "fingerprint"

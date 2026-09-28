@@ -2,7 +2,7 @@ import Constants from 'expo-constants';
 import * as Notifications from 'expo-notifications';
 import { AppState, AppStateStatus, Platform } from 'react-native';
 import { exportBackup, importBackup } from './backup';
-import { newMessageId } from './crypto/primitives';
+import { fromB64, newMessageId, toB64 } from './crypto/primitives';
 import { decodePayload, encodePayload, Envelope, parseHeader, PreKeyInfo } from './crypto/ratchet';
 import { safetyNumber } from './crypto/safetyNumber';
 import { canEncrypt, decryptWithRecord, encryptWithRecord } from './crypto/sessions';
@@ -20,6 +20,16 @@ import {
 import { log } from './log';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { resetAppearance } from './appearance';
+import { registerBackgroundNotifications } from './backgroundNotifications';
+import { encryptPreview, getOrCreateDeviceKey, keyFingerprint, previewText, resetDeviceKey } from './preview';
+
+function fromB64Safe(value: string): Uint8Array | null {
+  try {
+    return value ? fromB64(value) : null;
+  } catch {
+    return null;
+  }
+}
 import { SERVER_URL } from './config';
 import {
   decryptToCache,
@@ -368,6 +378,7 @@ export class ChatClient {
       await AsyncStorage.removeItem(`messages_${username}`).catch(() => {});
     }
     await wipeAllMedia();
+    await resetDeviceKey();
     await resetAppearance(); // las fotos de fondo tambien pueden ser personales
     await this.resetToLoggedOut('Se borró todo de este teléfono.');
   }
@@ -478,6 +489,7 @@ export class ChatClient {
   private async registerForPushNotifications() {
     this.pushRegistered = true;
     try {
+      await registerBackgroundNotifications();
       if (Platform.OS === 'android') {
         await Notifications.setNotificationChannelAsync('default', {
           name: 'Mensajes',
@@ -494,7 +506,8 @@ export class ChatClient {
       if (finalStatus !== 'granted') return;
       const projectId = Constants.expoConfig?.extra?.eas?.projectId;
       const tokenData = await Notifications.getExpoPushTokenAsync({ projectId });
-      this.send({ type: 'register-push-token', token: tokenData.data });
+      // platform y previews: el servidor manda la vista previa cifrada en el formato que este telefono sabe mostrar
+      this.send({ type: 'register-push-token', token: tokenData.data, platform: Platform.OS, previews: true });
     } catch (e) {
       this.pushRegistered = false;
       log('Error registrando notificaciones:', e);
@@ -673,12 +686,15 @@ export class ChatClient {
       await store.saveContactKeys(peer, { pinned: identity, seen: identity, verified: false });
     } else if (!sameIdentity(keys.seen, identity)) {
       await store.saveContactKeys(peer, { ...keys, seen: identity });
+      // Su telefono es nuevo: hay que volver a mandarle mi llave de vista previa
+      await store.deleteKv(`nk_sent:${peer}`);
     }
   }
 
   async acceptIdentity(peer: string) {
     const store = this.store;
     if (!store) return;
+    await store.deleteKv(`nk_sent:${peer}`);
     const keys = await store.getContactKeys(peer);
     if (!keys.seen) return;
     await store.saveContactKeys(peer, { pinned: keys.seen, seen: keys.seen, verified: false });
@@ -707,6 +723,7 @@ export class ChatClient {
   async resetSession(peer: string) {
     const store = this.store;
     if (!store) return;
+    await store.deleteKv(`nk_sent:${peer}`);
     await this.withLock(peer, () => store.deleteSessions(peer));
     await this.addSystemMessage(peer, 'Reiniciaste la sesión cifrada con este contacto.');
   }
@@ -899,6 +916,12 @@ export class ChatClient {
         const target = await store.getMessage(id);
         if (target && target.fromMe && target.peer === from && target.status !== 'read') await store.setStatus(id, 'read');
       }
+      return;
+    }
+
+    if (p.t === 'nk') {
+      // Llave de vista previa del contacto: con ella le cifro la vista previa de mis mensajes
+      if (typeof p.key === 'string' && fromB64Safe(p.key)?.length === 32) await store.setKv(`peer_nk:${from}`, p.key);
       return;
     }
 
@@ -1154,9 +1177,27 @@ export class ChatClient {
     };
   }
 
+  // La primera vez que le escribo a alguien (o si mi llave cambio) le mando mi llave de vista previa
+  private async ensurePreviewKeyShared(store: Store, peer: string) {
+    const key = await getOrCreateDeviceKey();
+    const fingerprint = keyFingerprint(key);
+    if ((await store.getKv(`nk_sent:${peer}`)) === fingerprint) return;
+    await store.addOutbox({ id: newMessageId(), peer, payload: JSON.stringify({ t: 'nk', key: toB64(key) }), silent: true, createdAt: Date.now() });
+    await store.setKv(`nk_sent:${peer}`, fingerprint);
+  }
+
+  // Vista previa cifrada con la llave del destinatario (si ya me la mando); el servidor no la puede leer
+  private async buildPreview(store: Store, peer: string, payload: Payload): Promise<string | undefined> {
+    if (payload.t !== 'msg') return undefined;
+    const peerKey = fromB64Safe((await store.getKv(`peer_nk:${peer}`)) ?? '');
+    if (!peerKey || peerKey.length !== 32) return undefined;
+    return encryptPreview(peerKey, { f: this.state.username, b: previewText(payload) });
+  }
+
   private async queueOutgoing(message: ChatMessage) {
     const store = this.store;
     if (!store) return;
+    await this.ensurePreviewKeyShared(store, message.peer).catch((e) => log('No se pudo compartir la llave de vista previa:', e));
     await store.insertMessage(message);
     await store.addOutbox({ id: message.id, peer: message.peer, payload: JSON.stringify(this.payloadFor(message)), silent: false, createdAt: Date.now() });
     await this.reloadMessages(message.peer);
@@ -1470,7 +1511,8 @@ export class ChatClient {
     }
 
     // 3. Mandar y esperar la confirmacion del servidor
-    const result = await this.sendAndWait(item.id, { type: 'direct-message', to: item.peer, clientId: item.id, envelope: encrypted, silent: item.silent });
+    const preview = item.silent ? undefined : await this.buildPreview(store, item.peer, payload).catch(() => undefined);
+    const result = await this.sendAndWait(item.id, { type: 'direct-message', to: item.peer, clientId: item.id, envelope: encrypted, silent: item.silent, preview });
     if (result === 'timeout') {
       await store.setOutboxError(item.id, item.attempts + 1, 'El servidor no confirmó que recibió el mensaje');
       return 'retry';
