@@ -56,6 +56,8 @@ const MAX_UPLOAD_ATTEMPTS = 5;
 const MAX_DOWNLOAD_ATTEMPTS = 3;
 const MAX_TEXT_LENGTH = 20_000;
 const MAX_TTL_SECONDS = 7 * 24 * 60 * 60;
+const DEFAULT_MESSAGE_LIMIT = 500;
+const MAX_PINS = 3;
 const TYPING_VISIBLE_MS = 6_000;
 const TYPING_RESEND_MS = 3_000;
 
@@ -78,6 +80,9 @@ export type ClientState = {
   timers: Record<string, number>; // segundos de los mensajes temporales por conversacion (0 = desactivado)
   typing: Record<string, 'typing' | 'recording'>; // contactos que estan escribiendo o grabando un audio ahora
   typingEnabled: boolean;
+  pins: Record<string, string[]>; // mensajes fijados por conversacion (el mas reciente primero, maximo 3)
+  pinnedMessages: ChatMessage[]; // los fijados de la conversacion abierta
+  jumpTo: string | null; // mensaje al que la pantalla del chat debe saltar (busqueda o fijado)
 };
 
 type ServerUser = { username: string; online: boolean; profilePicture: string | null; identity: PublicIdentity | null };
@@ -111,6 +116,9 @@ const INITIAL_STATE: ClientState = {
   timers: {},
   typing: {},
   typingEnabled: true,
+  pins: {},
+  pinnedMessages: [],
+  jumpTo: null,
 };
 
 export class ChatClient {
@@ -342,6 +350,7 @@ export class ChatClient {
     this.storeReady.resolve(store);
     this.startSweep();
     await this.loadTimers(store);
+    await this.loadPins(store);
     await this.refreshContacts();
   }
 
@@ -718,18 +727,51 @@ export class ChatClient {
 
   // ---------- conversacion abierta ----------
 
-  async openConversation(peer: string | null) {
-    this.setState({ openPeer: peer, messages: peer === this.state.openPeer ? this.state.messages : [] });
+  // jumpTo: abrir el chat en un mensaje concreto (resultado de busqueda o mensaje fijado)
+  async openConversation(peer: string | null, jumpTo: string | null = null) {
+    const samePeer = peer === this.state.openPeer;
+    this.setState({ openPeer: peer, messages: samePeer ? this.state.messages : [], pinnedMessages: samePeer ? this.state.pinnedMessages : [], jumpTo: null });
     if (!peer) return;
+    if (jumpTo) await this.ensureLoaded(peer, jumpTo);
     await this.reloadMessages(peer);
+    if (jumpTo) this.setState({ jumpTo });
     await this.markConversationRead(peer);
+  }
+
+  // Normalmente se cargan los ultimos 500; si se salta a uno mas viejo se cargan los necesarios
+  private messageLimit = new Map<string, number>();
+
+  private async ensureLoaded(peer: string, id: string) {
+    const store = this.store;
+    if (!store) return;
+    const needed = (await store.countFrom(peer, id)) + 30;
+    if (needed > (this.messageLimit.get(peer) ?? DEFAULT_MESSAGE_LIMIT)) this.messageLimit.set(peer, needed);
+  }
+
+  async jumpToMessage(id: string) {
+    const peer = this.state.openPeer;
+    if (!peer) return;
+    await this.ensureLoaded(peer, id);
+    await this.reloadMessages(peer);
+    this.setState({ jumpTo: id });
+  }
+
+  clearJump() {
+    if (this.state.jumpTo) this.setState({ jumpTo: null });
   }
 
   private async reloadMessages(peer: string) {
     const store = this.store;
     if (!store || this.state.openPeer !== peer) return;
-    const messages = await store.getMessages(peer);
-    if (this.state.openPeer === peer) this.setState({ messages });
+    const messages = await store.getMessages(peer, this.messageLimit.get(peer) ?? DEFAULT_MESSAGE_LIMIT);
+    const pinnedMessages = await this.loadPinnedMessages(store, peer);
+    if (this.state.openPeer === peer) this.setState({ messages, pinnedMessages });
+  }
+
+  async searchAll(query: string): Promise<ChatMessage[]> {
+    const q = query.trim();
+    if (!this.store || q.length < 2) return [];
+    return this.store.searchAll(q);
   }
 
   private async afterChange(peer: string) {
@@ -874,6 +916,10 @@ export class ChatClient {
       if (typeof p.emoji === 'string' && p.emoji.length > 0 && p.emoji.length <= 8) reactions[from] = p.emoji;
       else delete reactions[from];
       await store.setReactions(target.id, reactions);
+    } else if (p.t === 'pin') {
+      if (!target.deleted && target.kind !== 'system' && (await this.applyPin(store, from, target.id, !!p.pinned))) {
+        await this.addSystemMessage(from, p.pinned ? `${from} fijó un mensaje.` : `${from} desfijó un mensaje.`);
+      }
     } else if (p.t === 'viewed') {
       // El otro abrio la foto de "ver una vez": tambien se borra la copia de quien la mando
       if (target.fromMe && target.viewOnce && !target.viewed) {
@@ -927,6 +973,58 @@ export class ChatClient {
   async setTypingEnabled(enabled: boolean) {
     await AsyncStorage.setItem('typing_indicators', enabled ? 'on' : 'off').catch(() => {});
     this.setState({ typingEnabled: enabled, typing: enabled ? this.state.typing : {} });
+  }
+
+  // ---------- mensajes fijados ----------
+  // Se fijan para los dos (como WhatsApp), hasta 3 por conversacion.
+
+  private async loadPins(store: Store) {
+    const rows = await store.db.getAllAsync<{ key: string; value: string }>("SELECT key, value FROM kv WHERE key LIKE 'pins:%'");
+    const pins: Record<string, string[]> = {};
+    for (const r of rows) {
+      try {
+        pins[r.key.slice('pins:'.length)] = JSON.parse(r.value);
+      } catch {
+        // valor danado: se ignora
+      }
+    }
+    this.setState({ pins });
+  }
+
+  private async savePins(store: Store, peer: string, ids: string[]) {
+    await store.setKv(`pins:${peer}`, JSON.stringify(ids));
+    this.setState({ pins: { ...this.state.pins, [peer]: ids } });
+  }
+
+  // Los fijados que ya no existen (borrados o temporales vencidos) se quitan solos
+  private async loadPinnedMessages(store: Store, peer: string): Promise<ChatMessage[]> {
+    const ids = this.state.pins[peer] ?? [];
+    if (ids.length === 0) return [];
+    const found: ChatMessage[] = [];
+    for (const id of ids) {
+      const m = await store.getMessage(id);
+      if (m && !m.deleted && m.kind !== 'system') found.push(m);
+    }
+    if (found.length !== ids.length) await this.savePins(store, peer, found.map((m) => m.id));
+    return found;
+  }
+
+  private async applyPin(store: Store, peer: string, id: string, pinned: boolean): Promise<boolean> {
+    const current = this.state.pins[peer] ?? [];
+    const without = current.filter((x) => x !== id);
+    const next = pinned ? [id, ...without].slice(0, MAX_PINS) : without;
+    if (JSON.stringify(next) === JSON.stringify(current)) return false;
+    await this.savePins(store, peer, next);
+    return true;
+  }
+
+  async setPinned(peer: string, id: string, pinned: boolean) {
+    const store = this.store;
+    const target = store ? await store.getMessage(id) : null;
+    if (!store || !target || target.peer !== peer || target.deleted || target.kind === 'system') return;
+    if (!(await this.applyPin(store, peer, id, pinned))) return;
+    await this.addSystemMessage(peer, pinned ? 'Fijaste un mensaje.' : 'Desfijaste un mensaje.');
+    await this.queuePayload(peer, { t: 'pin', id, pinned }, true);
   }
 
   // ---------- mensajes temporales ----------

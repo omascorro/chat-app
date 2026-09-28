@@ -58,6 +58,10 @@ async function addMissingColumns(db: SQLite.SQLiteDatabase, table: string, colum
   }
 }
 
+export function normalizeForSearch(text: string): string {
+  return text.normalize('NFD').replace(/[̀-ͯ]/g, '').toLowerCase().trim();
+}
+
 export function databaseName(username: string): string {
   return `aeterna_${userKey(username)}.db`;
 }
@@ -166,6 +170,32 @@ export class Store {
     const rows = await this.db.getAllAsync<MessageRow>(
       'SELECT * FROM (SELECT *, rowid AS arrival FROM messages WHERE peer = ? ORDER BY sent_at DESC, rowid DESC LIMIT ?) ORDER BY sent_at ASC, arrival ASC',
       peer, limit,
+    );
+    return rows.map(rowToMessage);
+  }
+
+  // Cuantos mensajes del chat hay desde `id` hasta el final (para cargar lo suficiente al saltar a un mensaje viejo)
+  async countFrom(peer: string, id: string): Promise<number> {
+    const row = await this.db.getFirstAsync<{ n: number }>(
+      'SELECT COUNT(*) AS n FROM messages WHERE peer = ? AND sent_at >= (SELECT sent_at FROM messages WHERE id = ?)',
+      peer, id,
+    );
+    return row?.n ?? 0;
+  }
+
+  // Busqueda en todas las conversaciones (solo texto; la base esta cifrada, la busqueda se hace en el telefono).
+  // Sin distinguir mayusculas ni acentos: "reunion" encuentra "Reunión" y "manana" encuentra "mañana".
+  async searchAll(query: string, limit = 100): Promise<ChatMessage[]> {
+    const needle = normalizeForSearch(query);
+    if (!needle) return [];
+    const candidates = await this.db.getAllAsync<{ id: string; body: string }>(
+      "SELECT id, body FROM messages WHERE kind = 'text' AND deleted = 0 ORDER BY sent_at DESC",
+    );
+    const ids = candidates.filter((c) => normalizeForSearch(c.body).includes(needle)).slice(0, limit).map((c) => c.id);
+    if (ids.length === 0) return [];
+    const rows = await this.db.getAllAsync<MessageRow>(
+      `SELECT * FROM messages WHERE id IN (${ids.map(() => '?').join(', ')}) ORDER BY sent_at DESC`,
+      ...ids,
     );
     return rows.map(rowToMessage);
   }

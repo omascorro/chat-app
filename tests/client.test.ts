@@ -179,6 +179,50 @@ test('"escribiendo" llega al otro y se quita solo', async () => {
   await Promise.all([a.close(), b.close()]);
 });
 
+test('fijar un mensaje se sincroniza con el otro telefono (maximo 3) y desfijar tambien', async () => {
+  const [a, b, na, nb] = await pair();
+  for (const t of ['p1', 'p2', 'p3', 'p4']) await a.run('sendText', nb, t);
+  const atA = await waitFor('ana ve sus 4', () => msgs(a, nb), (l) => ['p1', 'p2', 'p3', 'p4'].every((t) => count(l, t) === 1));
+  await waitFor('beto recibe los 4', () => msgs(b, na), (l) => ['p1', 'p2', 'p3', 'p4'].every((t) => count(l, t) === 1));
+  const id = (body: string) => atA.find((m) => m.body === body)!.id;
+  for (const t of ['p1', 'p2', 'p3', 'p4']) await a.run('call', 'setPinned', nb, id(t), true);
+  const expected = [id('p4'), id('p3'), id('p2')]; // el mas reciente primero; p1 sale por el limite de 3
+  await waitFor('ana tiene 3 fijados', () => a.run('state'), (s: any) => JSON.stringify(s.pins[nb]) === JSON.stringify(expected));
+  await waitFor('beto tiene los mismos', () => b.run('state'), (s: any) => JSON.stringify(s.pins[na]) === JSON.stringify(expected));
+  await b.run('call', 'setPinned', na, id('p3'), false);
+  await waitFor('ana ve que beto desfijo p3', () => a.run('state'), (s: any) => !s.pins[nb].includes(id('p3')));
+  // Un fijado que se borra para todos desaparece de los fijados
+  await a.run('deleteForEveryone', nb, id('p4'));
+  await waitFor('beto ya no lo tiene fijado', async () => {
+    await msgs(b, na);
+    return b.run('state');
+  }, (s: any) => !s.pins[na].includes(id('p4')));
+  await Promise.all([a.close(), b.close()]);
+});
+
+test('la busqueda encuentra texto en todas las conversaciones, sin borrados ni avisos del sistema', async () => {
+  const [a, b, na, nb] = await pair();
+  await a.run('sendText', nb, 'La reunión es el Viernes en la mañana');
+  await a.run('sendText', nb, 'otro tema');
+  await a.run('sendText', nb, 'porcentaje 100% seguro');
+  await waitFor('beto recibe', () => msgs(b, na), (l) => bodies(l).length === 3);
+  const results = await b.run<Msg[]>('call', 'searchAll', 'viernes');
+  assert.deepEqual(results.map((m) => m.body), ['La reunión es el Viernes en la mañana'], 'sin distinguir mayusculas');
+  const accents = await b.run<Msg[]>('call', 'searchAll', 'REUNION manana');
+  assert.equal(accents.length, 0, 'las palabras deben ir juntas como en el texto');
+  assert.equal((await b.run<Msg[]>('call', 'searchAll', 'reunion')).length, 1, 'sin acentos encuentra con acentos');
+  assert.equal((await b.run<Msg[]>('call', 'searchAll', 'la mañana')).length, 1, 'con ñ');
+  assert.equal((await b.run<Msg[]>('call', 'searchAll', 'la manana')).length, 1, 'sin ñ encuentra con ñ');
+  const pct = await b.run<Msg[]>('call', 'searchAll', '100%');
+  assert.deepEqual(pct.map((m) => m.body), ['porcentaje 100% seguro'], 'el % se busca literal');
+  assert.equal((await b.run<Msg[]>('call', 'searchAll', 'x')).length, 0, 'minimo 2 letras');
+  const del = (await msgs(a, nb)).find((m) => m.body === 'otro tema')!;
+  await a.run('deleteForEveryone', nb, del.id);
+  await waitFor('se borra en beto', () => msgs(b, na), (l) => l.some((m) => m.id === del.id && m.deleted));
+  assert.equal((await b.run<Msg[]>('call', 'searchAll', 'otro tema')).length, 0, 'los borrados no aparecen');
+  await Promise.all([a.close(), b.close()]);
+});
+
 (async () => {
   const { url } = await startServer();
   console.log = () => {}; // el servidor escribe mucho; los resultados van por stdout directo

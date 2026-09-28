@@ -53,6 +53,33 @@ export function ChatScreen({ state, peer }: { state: ClientState; peer: string }
   // despues de dibujarse. Por eso los datos van del mas nuevo al mas viejo.
   const listData = useMemo(() => [...(searching ? searchResults : messages)].reverse(), [searching, searchResults, messages]);
 
+  // Saltar a un mensaje (desde la busqueda general o un fijado) y resaltarlo un momento
+  const listRef = useRef<FlatList<ChatMessage>>(null);
+  const [highlightId, setHighlightId] = useState<string | null>(null);
+  const [pinIndex, setPinIndex] = useState(0);
+  const pinned = state.pinnedMessages;
+  const pinnedIds = useMemo(() => new Set(pinned.map((m) => m.id)), [pinned]);
+
+  useEffect(() => {
+    const target = state.jumpTo;
+    if (!target || searching) return;
+    const index = listData.findIndex((m) => m.id === target);
+    if (index < 0) return;
+    client.clearJump();
+    setHighlightId(target);
+    requestAnimationFrame(() => listRef.current?.scrollToIndex({ index, animated: true, viewPosition: 0.5 }));
+    const t = setTimeout(() => setHighlightId(null), 1800);
+    return () => clearTimeout(t);
+  }, [state.jumpTo, listData, searching]);
+
+  const goToPinned = () => {
+    if (pinned.length === 0) return;
+    const current = pinned[pinIndex % pinned.length];
+    client.jumpToMessage(current.id);
+    // Con varios fijados, cada toque pasa al siguiente (como WhatsApp)
+    setPinIndex((i) => (i + 1) % pinned.length);
+  };
+
   useEffect(() => {
     if (!searching) return;
     let cancelled = false;
@@ -317,6 +344,25 @@ export function ChatScreen({ state, peer }: { state: ClientState; peer: string }
             </View>
           )}
 
+          {pinned.length > 0 && !searchOpen && (
+            <TouchableOpacity style={styles.pinBar} onPress={goToPinned} activeOpacity={0.7}>
+              <Text style={{ fontSize: 16, marginRight: 8 }}>📌</Text>
+              <View style={{ flex: 1 }}>
+                <Text style={styles.pinBarLabel}>
+                  {pinned.length > 1 ? `MENSAJE FIJADO ${(pinIndex % pinned.length) + 1} DE ${pinned.length}` : 'MENSAJE FIJADO'}
+                </Text>
+                <Text style={styles.pinBarText} numberOfLines={1}>{describeMessage(pinned[pinIndex % pinned.length])}</Text>
+              </View>
+              <TouchableOpacity
+                style={styles.pinBarClose}
+                onPress={() => client.setPinned(peer, pinned[pinIndex % pinned.length].id, false)}
+                activeOpacity={0.6}
+              >
+                <Text style={{ fontSize: 16, color: colors.textMuted }}>✕</Text>
+              </TouchableOpacity>
+            </TouchableOpacity>
+          )}
+
           {searchOpen && (
             <View style={styles.topSearchRow}>
               <TextInput
@@ -337,7 +383,13 @@ export function ChatScreen({ state, peer }: { state: ClientState; peer: string }
             </View>
           )}
           <FlatList
+            ref={listRef}
             inverted
+            onScrollToIndexFailed={(info) => {
+              // El mensaje todavia no se ha dibujado: acercarse y volver a intentar
+              listRef.current?.scrollToOffset({ offset: info.averageItemLength * info.index, animated: false });
+              setTimeout(() => listRef.current?.scrollToIndex({ index: info.index, animated: true, viewPosition: 0.5 }), 120);
+            }}
             style={{ flex: 1 }}
             data={listData}
             keyExtractor={(item) => item.id}
@@ -364,6 +416,8 @@ export function ChatScreen({ state, peer }: { state: ClientState; peer: string }
                   onRetrySend={(id) => client.retrySend(id)}
                   onRetryDownload={(id) => client.retryDownload(id)}
                   onOpenViewOnce={openViewOnce}
+                  highlighted={item.id === highlightId}
+                  pinned={pinnedIds.has(item.id)}
                 />
               </SwipeToReply>
             )}
@@ -470,6 +524,8 @@ export function ChatScreen({ state, peer }: { state: ClientState; peer: string }
         onEdit={startEdit}
         onDeleteForEveryone={confirmDeleteForEveryone}
         onDeleteForMe={(m) => client.deleteForMe(m.id)}
+        pinned={!!actionTarget && pinnedIds.has(actionTarget.id)}
+        onTogglePin={(m) => client.setPinned(peer, m.id, !pinnedIds.has(m.id))}
         onSaveSticker={async (m) => {
           try {
             const added = await client.saveReceivedSticker(m.id);

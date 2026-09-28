@@ -283,6 +283,33 @@ export function createStyles(COLORS: Colors) {
     },
     fabIcon: { fontSize: 28, color: COLORS.onPrimary, fontWeight: '600', marginTop: -2 },
 
+    // Mensaje resaltado al saltar a el, y barra de mensajes fijados
+    highlightedRow: { backgroundColor: COLORS.accent + '40', paddingVertical: 4 },
+    pinBar: {
+      flexDirection: 'row', alignItems: 'center',
+      marginHorizontal: 8, marginBottom: 6, paddingLeft: 14, paddingRight: 4, minHeight: 42,
+      backgroundColor: COLORS.card, borderRadius: 21, borderWidth: 1, borderColor: COLORS.border,
+    },
+    pinBarText: { flex: 1, fontSize: 13, color: COLORS.text },
+    pinBarLabel: { fontSize: 11, fontWeight: '800', color: COLORS.accent },
+    pinBarClose: { width: 36, height: 36, alignItems: 'center', justifyContent: 'center' },
+
+    // Busqueda en todas las conversaciones
+    searchPill: {
+      marginHorizontal: 12, marginBottom: 10, height: 44, paddingHorizontal: 16,
+      backgroundColor: COLORS.card, borderRadius: 22, borderWidth: 1, borderColor: COLORS.border,
+      fontSize: 15, color: COLORS.text,
+    },
+    resultCard: {
+      flexDirection: 'row', alignItems: 'flex-start',
+      backgroundColor: COLORS.card, borderRadius: 18, borderWidth: 1, borderColor: COLORS.border,
+      padding: 12, marginBottom: 8,
+    },
+    resultName: { fontSize: 14, fontWeight: '700', color: COLORS.text, flex: 1 },
+    resultDate: { fontSize: 11, color: COLORS.textMuted },
+    resultBody: { fontSize: 14, color: COLORS.textMuted, marginTop: 3 },
+    resultMatch: { color: COLORS.text, fontWeight: '800', backgroundColor: COLORS.accent + '40' },
+
     // Selector de icono de la app
     iconGrid: { flexDirection: 'row', flexWrap: 'wrap' },
     iconTile: { width: '25%', alignItems: 'center', marginBottom: 12 },

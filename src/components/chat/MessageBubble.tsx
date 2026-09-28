@@ -37,6 +37,8 @@ type Props = {
   onRetrySend: (id: string) => void;
   onRetryDownload: (id: string) => void;
   onOpenViewOnce: (m: ChatMessage) => void;
+  highlighted?: boolean; // al saltar a este mensaje (busqueda o fijado)
+  pinned?: boolean;
 };
 
 function ViewOnceContent({ item, styles, onOpen, onRetryDownload }: { item: ChatMessage; styles: ChatStyles; onOpen: (m: ChatMessage) => void; onRetryDownload: (id: string) => void }) {
@@ -58,7 +60,7 @@ function ViewOnceContent({ item, styles, onOpen, onRetryDownload }: { item: Chat
   );
 }
 
-export function MessageBubble({ message: item, quoted, me, peer, epoch, styles, onLongPress, onZoom, onRetrySend, onRetryDownload, onOpenViewOnce }: Props) {
+export function MessageBubble({ message: item, quoted, me, peer, epoch, styles, onLongPress, onZoom, onRetrySend, onRetryDownload, onOpenViewOnce, highlighted, pinned }: Props) {
   if (item.kind === 'system') {
     return (
       <View style={styles.systemRow}>
@@ -97,7 +99,7 @@ export function MessageBubble({ message: item, quoted, me, peer, epoch, styles, 
   ) : null;
 
   return (
-    <View style={{ alignItems: mine ? 'flex-end' : 'flex-start', marginVertical: 3 }}>
+    <View style={[{ alignItems: mine ? 'flex-end' : 'flex-start', marginVertical: 3, borderRadius: 16 }, highlighted && styles.highlightedRow]}>
       <TouchableOpacity activeOpacity={0.85} onLongPress={() => onLongPress(item)} delayLongPress={300}>
         {isImageSticker && !quote ? (
           <EncryptedSticker {...mediaProps} />
@@ -126,6 +128,7 @@ export function MessageBubble({ message: item, quoted, me, peer, epoch, styles, 
         </View>
       )}
       <View style={{ flexDirection: 'row', alignItems: 'center' }}>
+        {pinned && <Text style={styles.timestamp}>📌 </Text>}
         {item.selfDestruct && <Text style={styles.timestamp}>⏱ </Text>}
         {item.editedAt && !item.deleted && <Text style={styles.editedLabel}>editado · </Text>}
         <Text style={styles.timestamp}>{formatTime(item.sentAt)}</Text>

@@ -75,6 +75,7 @@ export type Payload =
       replyTo?: string;
     }
   | { t: 'timer'; seconds: number }
+  | { t: 'pin'; id: string; pinned: boolean }
   | { t: 'viewed'; id: string }
   | { t: 'edit'; id: string; body: string; at: number }
   | { t: 'delete'; id: string }

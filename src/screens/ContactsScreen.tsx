@@ -1,16 +1,34 @@
 import * as ImagePicker from 'expo-image-picker';
 import { StatusBar } from 'expo-status-bar';
-import { useState } from 'react';
-import { Alert, FlatList, Text, TouchableOpacity, View } from 'react-native';
+import { useEffect, useState } from 'react';
+import { Alert, FlatList, Text, TextInput, TouchableOpacity, View } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { Avatar } from '../components/chat/Avatar';
 import { PromptModal } from '../components/chat/Modals';
+import { SearchResults } from '../components/chat/SearchResults';
 import { useChatTheme } from '../components/chat/useChatTheme';
 import { client, ClientState } from '../lib/client';
+import { ChatMessage } from '../lib/types';
 
 export function ContactsScreen({ state, onOpenSettings }: { state: ClientState; onOpenSettings: () => void }) {
   const { isDark, colors, styles } = useChatTheme();
   const [adding, setAdding] = useState(false);
+  const [query, setQuery] = useState('');
+  const [results, setResults] = useState<ChatMessage[]>([]);
+  const searching = query.trim().length >= 2;
+
+  // Busqueda en todas las conversaciones (espera un momento a que termines de escribir)
+  useEffect(() => {
+    if (!searching) return;
+    let cancelled = false;
+    const t = setTimeout(() => {
+      client.searchAll(query).then((r) => !cancelled && setResults(r));
+    }, 200);
+    return () => {
+      cancelled = true;
+      clearTimeout(t);
+    };
+  }, [query, searching]);
 
   const updateProfilePicture = async () => {
     const permission = await ImagePicker.requestMediaLibraryPermissionsAsync();
@@ -67,6 +85,28 @@ export function ContactsScreen({ state, onOpenSettings }: { state: ClientState; 
         </View>
 
         <Text style={styles.contactsTitle}>Chats</Text>
+        <TextInput
+          style={styles.searchPill}
+          placeholder="🔍  Buscar en todos los chats"
+          placeholderTextColor={colors.textMuted}
+          value={query}
+          onChangeText={setQuery}
+          autoCorrect={false}
+          clearButtonMode="while-editing"
+        />
+
+        {searching ? (
+          <SearchResults
+            results={results}
+            query={query.trim()}
+            contacts={state.contacts}
+            styles={styles}
+            onOpen={(m) => {
+              setQuery('');
+              client.openConversation(m.peer, m.id);
+            }}
+          />
+        ) : (
 
         <FlatList
           data={state.contacts}
@@ -108,6 +148,8 @@ export function ContactsScreen({ state, onOpenSettings }: { state: ClientState; 
             </TouchableOpacity>
           )}
         />
+
+        )}
 
         <TouchableOpacity style={styles.fab} onPress={() => setAdding(true)} activeOpacity={0.8}>
           <Text style={styles.fabIcon}>＋</Text>
