@@ -223,6 +223,23 @@ test('la busqueda encuentra texto en todas las conversaciones, sin borrados ni a
   await Promise.all([a.close(), b.close()]);
 });
 
+test('borrar una foto: para todos la quita de los dos telefonos (con su archivo) y para mi solo del mio', async () => {
+  const [a, b, na, nb] = await pair();
+  await a.run('sendImage', nb);
+  await a.run('sendImage', nb);
+  const photos = (await waitFor('beto descarga las 2 fotos', () => msgs(b, na), (l) => l.filter((m) => m.kind === 'image' && m.hasFile).length === 2))
+    .filter((m) => m.kind === 'image');
+  await a.run('deleteForEveryone', nb, photos[0].id);
+  await waitFor('se borra en beto con su archivo', () => msgs(b, na), (l) => l.some((m) => m.id === photos[0].id && m.deleted && !m.hasFile));
+  const atA = await msgs(a, nb);
+  assert.ok(atA.some((m) => m.id === photos[0].id && m.deleted && !m.hasFile), 'y en ana tambien');
+  await b.run('call', 'deleteForMe', photos[1].id);
+  assert.ok(!(await msgs(b, na)).some((m) => m.id === photos[1].id), 'beto la borro para el');
+  await sleep(500);
+  assert.ok((await msgs(a, nb)).some((m) => m.id === photos[1].id && !m.deleted && m.hasFile), 'ana la conserva');
+  await Promise.all([a.close(), b.close()]);
+});
+
 test('vaciar chat: solo en mi telefono, o para los dos (con fotos y fijados)', async () => {
   const [a, b, na, nb] = await pair();
   await a.run('sendText', nb, 'mensaje 1');

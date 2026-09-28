@@ -41,20 +41,20 @@ type Props = {
   pinned?: boolean;
 };
 
-function ViewOnceContent({ item, styles, onOpen, onRetryDownload }: { item: ChatMessage; styles: ChatStyles; onOpen: (m: ChatMessage) => void; onRetryDownload: (id: string) => void }) {
+function ViewOnceContent({ item, styles, onOpen, onRetryDownload, onLongPress }: { item: ChatMessage; styles: ChatStyles; onOpen: (m: ChatMessage) => void; onRetryDownload: (id: string) => void; onLongPress: () => void }) {
   const textStyle = item.fromMe ? styles.myText : styles.theirText;
   if (item.viewed) return <Text style={textStyle}>📷 Foto de ver una vez · {item.fromMe ? 'abierta' : 'ya la viste'}</Text>;
   if (item.fromMe) return <Text style={textStyle}>📷 Foto de ver una vez</Text>;
   if (item.downloadState === 'failed') {
     return (
-      <TouchableOpacity onPress={() => onRetryDownload(item.id)}>
+      <TouchableOpacity onPress={() => onRetryDownload(item.id)} onLongPress={onLongPress} delayLongPress={300}>
         <Text style={textStyle}>📷 Foto de ver una vez{'\n'}⚠ No se pudo descargar · toca para reintentar</Text>
       </TouchableOpacity>
     );
   }
   if (item.downloadState !== 'done') return <Text style={textStyle}>📷 Foto de ver una vez · descargando…</Text>;
   return (
-    <TouchableOpacity onPress={() => onOpen(item)} activeOpacity={0.7}>
+    <TouchableOpacity onPress={() => onOpen(item)} onLongPress={onLongPress} delayLongPress={300} activeOpacity={0.7}>
       <Text style={textStyle}>📷 Foto de ver una vez{'\n'}Toca para abrir. Se borra al cerrarla.</Text>
     </TouchableOpacity>
   );
@@ -74,13 +74,13 @@ export function MessageBubble({ message: item, quoted, me, peer, epoch, styles, 
   // Los stickers nuevos son imagenes; los viejos eran un emoji en el texto
   const isImageSticker = item.kind === 'sticker' && !item.deleted && !!item.media;
   const reactions = Object.values(item.reactions);
-  const mediaProps = { message: item, epoch, styles, onRetryDownload };
+  const mediaProps = { message: item, epoch, styles, onRetryDownload, onLongPress: () => onLongPress(item) };
 
   let content;
   if (item.deleted) {
     content = <Text style={styles.deletedText}>🚫 Mensaje eliminado</Text>;
   } else if (item.viewOnce) {
-    content = <ViewOnceContent item={item} styles={styles} onOpen={onOpenViewOnce} onRetryDownload={onRetryDownload} />;
+    content = <ViewOnceContent item={item} styles={styles} onOpen={onOpenViewOnce} onRetryDownload={onRetryDownload} onLongPress={() => onLongPress(item)} />;
   } else if (item.kind === 'image') {
     content = <EncryptedImage {...mediaProps} onZoom={onZoom} />;
   } else if (item.kind === 'video') {

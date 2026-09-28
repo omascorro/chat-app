@@ -282,6 +282,22 @@ export function ChatScreen({ state, peer }: { state: ClientState; peer: string }
     ]);
   };
 
+  // Al deslizar un mensaje a la izquierda
+  const confirmSwipeDelete = (m: ChatMessage) => {
+    const canDeleteForEveryone = m.fromMe && !m.deleted && m.kind !== 'system';
+    Alert.alert(
+      'Borrar mensaje',
+      canDeleteForEveryone ? '"Para todos" también lo borra del teléfono de la otra persona.' : 'Se borra solo de tu teléfono.',
+      [
+        { text: 'Cancelar', style: 'cancel' },
+        ...(canDeleteForEveryone
+          ? [{ text: 'Borrar para todos', style: 'destructive' as const, onPress: () => client.deleteForEveryone(peer, m.id) }]
+          : []),
+        { text: 'Borrar para mí', style: 'destructive' as const, onPress: () => client.deleteForMe(m.id) },
+      ],
+    );
+  };
+
   if (showInfo) return <ContactInfoScreen state={state} peer={peer} onClose={() => setShowInfo(false)} />;
 
   return (
@@ -399,10 +415,12 @@ export function ChatScreen({ state, peer }: { state: ClientState; peer: string }
               <SwipeToReply
                 enabled={item.kind !== 'system' && !item.deleted}
                 iconColor={colors.accent}
+                deleteColor={colors.danger}
                 onReply={() => {
                   setEditing(null);
                   setReplyTo(item);
                 }}
+                onDelete={() => confirmSwipeDelete(item)}
               >
                 <MessageBubble
                   message={item}

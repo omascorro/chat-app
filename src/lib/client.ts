@@ -1139,31 +1139,51 @@ export class ChatClient {
 
   // ---------- descargas ----------
 
+  private downloadAgain = false;
+  private downloadRetryTimer: ReturnType<typeof setTimeout> | null = null;
+
   private async runDownloads() {
-    if (this.downloading) return;
+    // Si llega otro archivo mientras se descarga uno, se revisa otra vez al terminar
+    // (antes se ignoraba y la segunda foto se quedaba en "Descargando…")
+    if (this.downloading) {
+      this.downloadAgain = true;
+      return;
+    }
     const store = this.store;
     if (!store) return;
     this.downloading = true;
+    let retryLater = false;
     try {
-      for (const m of await store.pendingDownloads()) {
-        if (!m.media) continue;
-        try {
-          const auth = this.mediaAuth();
-          if (!auth) break;
-          const mediaFile = await downloadMedia(m.id, m.media, auth);
-          await store.setMedia(m.id, m.media, mediaFile, 'done');
-          // Ya lo tenemos: el servidor puede borrar la copia de Supabase
-          if (m.media.path) this.send({ type: 'media-done', bucket: m.media.bucket, path: m.media.path });
-        } catch (e) {
-          log('No se pudo descargar un archivo:', e);
-          const attempts = (this.downloadAttempts.get(m.id) || 0) + 1;
-          this.downloadAttempts.set(m.id, attempts);
-          if (attempts >= MAX_DOWNLOAD_ATTEMPTS) await store.setMedia(m.id, m.media, null, 'failed');
+      do {
+        this.downloadAgain = false;
+        for (const m of await store.pendingDownloads()) {
+          if (!m.media || this.store !== store) continue;
+          try {
+            const auth = this.mediaAuth();
+            if (!auth) break;
+            const mediaFile = await downloadMedia(m.id, m.media, auth);
+            await store.setMedia(m.id, m.media, mediaFile, 'done');
+            // Ya lo tenemos: el servidor puede borrar la copia de Supabase
+            if (m.media.path) this.send({ type: 'media-done', bucket: m.media.bucket, path: m.media.path });
+          } catch (e) {
+            log('No se pudo descargar un archivo:', e);
+            const attempts = (this.downloadAttempts.get(m.id) || 0) + 1;
+            this.downloadAttempts.set(m.id, attempts);
+            if (attempts >= MAX_DOWNLOAD_ATTEMPTS) await store.setMedia(m.id, m.media, null, 'failed');
+            else retryLater = true;
+          }
+          await this.reloadMessages(m.peer);
         }
-        await this.reloadMessages(m.peer);
-      }
+      } while (this.downloadAgain);
     } finally {
       this.downloading = false;
+    }
+    // Un fallo pasajero (red) se reintenta solo, sin esperar a que llegue otro mensaje
+    if (retryLater && !this.downloadRetryTimer) {
+      this.downloadRetryTimer = setTimeout(() => {
+        this.downloadRetryTimer = null;
+        this.runDownloads();
+      }, TIMEOUTS.retry);
     }
   }
 

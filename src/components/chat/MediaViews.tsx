@@ -34,13 +34,16 @@ type MediaProps = {
   epoch: number;
   styles: ChatStyles;
   onRetryDownload: (id: string) => void;
+  // Los botones internos (abrir foto, reproducir audio) tambien abren el menu al mantener presionado;
+  // si no, se quedaban con el toque y el menu del mensaje nunca aparecia
+  onLongPress?: () => void;
 };
 
-function Placeholder({ message, styles, onRetryDownload, error }: MediaProps & { error: boolean }) {
+function Placeholder({ message, styles, onRetryDownload, onLongPress, error }: MediaProps & { error: boolean }) {
   const textStyle = message.fromMe ? styles.mediaPlaceholderTextMine : styles.mediaPlaceholderText;
   if (message.downloadState === 'failed' || error) {
     return (
-      <TouchableOpacity style={styles.mediaPlaceholder} onPress={() => onRetryDownload(message.id)} activeOpacity={0.7}>
+      <TouchableOpacity style={styles.mediaPlaceholder} onPress={() => onRetryDownload(message.id)} onLongPress={onLongPress} delayLongPress={300} activeOpacity={0.7}>
         <Text style={textStyle}>⚠ No se pudo descargar{'\n'}Toca para reintentar</Text>
       </TouchableOpacity>
     );
@@ -56,7 +59,7 @@ export function EncryptedImage(props: MediaProps & { onZoom: (uri: string) => vo
   const { uri, error } = useDecryptedUri(props.message, props.epoch);
   if (!uri) return <Placeholder {...props} error={error} />;
   return (
-    <TouchableOpacity onPress={() => props.onZoom(uri)} activeOpacity={0.9}>
+    <TouchableOpacity onPress={() => props.onZoom(uri)} onLongPress={props.onLongPress} delayLongPress={300} activeOpacity={0.9}>
       <Image source={{ uri }} style={props.styles.messageImage} resizeMode="cover" />
     </TouchableOpacity>
   );
@@ -70,7 +73,7 @@ export function EncryptedSticker(props: MediaProps & { size?: number }) {
     return (
       <View style={{ width: size, height: size, alignItems: 'center', justifyContent: 'center' }}>
         {props.message.downloadState === 'failed' || error ? (
-          <TouchableOpacity onPress={() => props.onRetryDownload(props.message.id)}>
+          <TouchableOpacity onPress={() => props.onRetryDownload(props.message.id)} onLongPress={props.onLongPress} delayLongPress={300}>
             <Text style={props.styles.mediaPlaceholderText}>⚠ Toca para reintentar</Text>
           </TouchableOpacity>
         ) : (
@@ -95,7 +98,7 @@ export function EncryptedVideo(props: MediaProps) {
   return <VideoPlayerView key={uri} uri={uri} style={props.styles.messageImage} />;
 }
 
-function VoicePlayerView({ uri, duration, textColor }: { uri: string; duration: number | null; textColor: string }) {
+function VoicePlayerView({ uri, duration, textColor, onLongPress }: { uri: string; duration: number | null; textColor: string; onLongPress?: () => void }) {
   const player = useAudioPlayer(uri);
   const status = useAudioPlayerStatus(player);
 
@@ -115,7 +118,7 @@ function VoicePlayerView({ uri, duration, textColor }: { uri: string; duration: 
   const label = mins + ':' + secs.toString().padStart(2, '0');
 
   return (
-    <TouchableOpacity onPress={togglePlay} style={{ flexDirection: 'row', alignItems: 'center', minWidth: 130 }} activeOpacity={0.7}>
+    <TouchableOpacity onPress={togglePlay} onLongPress={onLongPress} delayLongPress={300} style={{ flexDirection: 'row', alignItems: 'center', minWidth: 130 }} activeOpacity={0.7}>
       <Text style={{ fontSize: 20, marginRight: 8 }}>{status.playing ? '⏸' : '▶️'}</Text>
       <Text style={{ color: textColor, fontSize: 14, fontWeight: '700' }}>{label}</Text>
     </TouchableOpacity>
@@ -125,5 +128,5 @@ function VoicePlayerView({ uri, duration, textColor }: { uri: string; duration: 
 export function EncryptedVoice(props: MediaProps & { textColor: string }) {
   const { uri, error } = useDecryptedUri(props.message, props.epoch);
   if (!uri) return <Placeholder {...props} error={error} />;
-  return <VoicePlayerView key={uri} uri={uri} duration={props.message.duration} textColor={props.textColor} />;
+  return <VoicePlayerView key={uri} uri={uri} duration={props.message.duration} textColor={props.textColor} onLongPress={props.onLongPress} />;
 }
