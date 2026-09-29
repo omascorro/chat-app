@@ -53,6 +53,14 @@ const commands: Record<string, (...args: any[]) => Promise<unknown>> = {
     const uri = makeTestFile(`foto-${Date.now()}.png`, PNG);
     await client.sendMedia(peer, uri, 'image', { viewOnce });
   },
+  // Nota de voz de prueba: bytes al azar con tamaño de un audio corto (el contenido no importa para el cifrado)
+  async sendVoice(peer: string, size: number) {
+    const bytes = Buffer.alloc(size, 7);
+    for (let i = 0; i < size; i += 97) bytes[i] = i % 251;
+    const uri = makeTestFile(`voz-${Date.now()}.m4a`, bytes);
+    await client.sendMedia(peer, uri, 'voice', { duration: 3 });
+    return bytes.toString('base64');
+  },
   async messages(peer: string) {
     await client.openConversation(peer);
     return client.getSnapshot().messages.map((m) => ({

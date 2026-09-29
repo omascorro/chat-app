@@ -282,6 +282,17 @@ test('foto de perfil: el contacto la ve, y la que quedo cifrada se restaura sola
   await Promise.all([a.close(), b.close()]);
 });
 
+test('nota de voz: el otro telefono la descarga y la descifra identica (con relleno)', async () => {
+  const [a, b, na, nb] = await pair();
+  const original = await a.run<string>('sendVoice', nb, 37_123);
+  const got = await waitFor('beto descarga la nota de voz', () => msgs(b, na), (l) => l.some((m) => m.kind === 'voice' && m.hasFile));
+  const voice = got.find((m) => m.kind === 'voice')!;
+  assert.equal(await b.run('decryptMedia', na, voice.id), original, 'beto escucha exactamente lo que grabo ana');
+  const mine = (await msgs(a, nb)).find((m) => m.kind === 'voice')!;
+  assert.equal(await a.run('decryptMedia', nb, mine.id), original, 'y ana su propia nota');
+  await Promise.all([a.close(), b.close()]);
+});
+
 test('vaciar chat: solo en mi telefono, o para los dos (con fotos y fijados)', async () => {
   const [a, b, na, nb] = await pair();
   await a.run('sendText', nb, 'mensaje 1');

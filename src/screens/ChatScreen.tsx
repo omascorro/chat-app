@@ -1,4 +1,4 @@
-import { AudioModule, RecordingPresets, setAudioModeAsync, useAudioRecorder } from 'expo-audio';
+import { AudioModule, RecordingPresets, useAudioRecorder } from 'expo-audio';
 import * as ImagePicker from 'expo-image-picker';
 import { StatusBar } from 'expo-status-bar';
 import { useEffect, useMemo, useRef, useState } from 'react';
@@ -10,6 +10,7 @@ import { describeMessage, MessageBubble } from '../components/chat/MessageBubble
 import { MessageActions, OptionsModal } from '../components/chat/Modals';
 import { useChatTheme } from '../components/chat/useChatTheme';
 import { client, ClientState } from '../lib/client';
+import { enterRecordingMode, exitRecordingMode } from '../lib/audioMode';
 import { reencodeImage } from '../lib/imageSafety';
 import { log } from '../lib/log';
 import { decryptToCache, deleteIfAppFile, removeFromCache } from '../lib/media';
@@ -209,7 +210,7 @@ export function ChatScreen({ state, peer }: { state: ClientState; peer: string }
     try {
       const permission = await AudioModule.requestRecordingPermissionsAsync();
       if (!permission.granted) return;
-      await setAudioModeAsync({ allowsRecording: true, playsInSilentMode: true });
+      await enterRecordingMode();
       await audioRecorder.prepareToRecordAsync();
       audioRecorder.record();
       setIsRecording(true);
@@ -221,6 +222,7 @@ export function ChatScreen({ state, peer }: { state: ClientState; peer: string }
       }, 1000);
     } catch (e) {
       log('Error iniciando la grabacion:', e);
+      exitRecordingMode();
     }
   };
 
@@ -237,6 +239,9 @@ export function ChatScreen({ state, peer }: { state: ClientState; peer: string }
       await audioRecorder.stop();
     } catch {
       return;
+    } finally {
+      // Para que las notas de voz se escuchen por la bocina y con volumen normal
+      exitRecordingMode();
     }
     const localUri = audioRecorder.uri;
     if (!localUri) return;
@@ -265,6 +270,9 @@ export function ChatScreen({ state, peer }: { state: ClientState; peer: string }
       await audioRecorder.stop();
     } catch {
       return;
+    } finally {
+      // Para que las notas de voz se escuchen por la bocina y con volumen normal
+      exitRecordingMode();
     }
     if (audioRecorder.uri) deleteIfAppFile(audioRecorder.uri);
   };

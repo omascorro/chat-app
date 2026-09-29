@@ -2,6 +2,7 @@ import { useAudioPlayer, useAudioPlayerStatus } from 'expo-audio';
 import { useVideoPlayer, VideoView } from 'expo-video';
 import { useEffect, useState } from 'react';
 import { Image, Text, TouchableOpacity, View } from 'react-native';
+import { preparePlayback } from '../../lib/audioMode';
 import { decryptToCache } from '../../lib/media';
 import { ChatMessage, MediaKind } from '../../lib/types';
 import { ChatStyles } from './useChatTheme';
@@ -102,11 +103,13 @@ function VoicePlayerView({ uri, duration, textColor, onLongPress }: { uri: strin
   const player = useAudioPlayer(uri);
   const status = useAudioPlayerStatus(player);
 
-  const togglePlay = () => {
+  const togglePlay = async () => {
     if (status.playing) {
       player.pause();
       return;
     }
+    // Sin esto, en iPhone con el interruptor de silencio activado no se oia nada
+    await preparePlayback();
     if (status.didJustFinish || (status.duration > 0 && status.currentTime >= status.duration)) {
       player.seekTo(0);
     }
