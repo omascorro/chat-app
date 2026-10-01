@@ -2,7 +2,7 @@ import { AudioModule, RecordingPresets, useAudioRecorder } from 'expo-audio';
 import * as ImagePicker from 'expo-image-picker';
 import { StatusBar } from 'expo-status-bar';
 import { useEffect, useMemo, useRef, useState } from 'react';
-import { Alert, FlatList, Keyboard, KeyboardAvoidingView, Platform, Text, TextInput, TouchableOpacity, View } from 'react-native';
+import { Alert, BackHandler, FlatList, Keyboard, KeyboardAvoidingView, Platform, Text, TextInput, TouchableOpacity, View } from 'react-native';
 import ImageViewing from 'react-native-image-viewing';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { Avatar } from '../components/chat/Avatar';
@@ -31,6 +31,23 @@ export function ChatScreen({ state, peer }: { state: ClientState; peer: string }
 
   const [inputText, setInputText] = useState('');
   const [showStickers, setShowStickers] = useState(false);
+  const inputRef = useRef<TextInput>(null);
+
+  // Regresar del panel de stickers al teclado (como WhatsApp)
+  const backToKeyboard = () => {
+    setShowStickers(false);
+    setTimeout(() => inputRef.current?.focus(), 50);
+  };
+
+  // En Android, el boton de atras cierra primero el panel de stickers
+  useEffect(() => {
+    if (!showStickers) return;
+    const sub = BackHandler.addEventListener('hardwareBackPress', () => {
+      setShowStickers(false);
+      return true;
+    });
+    return () => sub.remove();
+  }, [showStickers]);
   const [timerMenu, setTimerMenu] = useState(false);
   const [viewOnceOpen, setViewOnceOpen] = useState<{ id: string; uri: string } | null>(null);
   const timer = state.timers[peer] || 0;
@@ -486,16 +503,21 @@ export function ChatScreen({ state, peer }: { state: ClientState; peer: string }
                 {!editing && (
                   <TouchableOpacity
                     onPress={() => {
+                      if (showStickers) {
+                        backToKeyboard();
+                        return;
+                      }
                       Keyboard.dismiss();
-                      setShowStickers((v) => !v);
+                      setShowStickers(true);
                     }}
                     style={styles.composerIconButton}
                     activeOpacity={0.6}
                   >
-                    <Text style={[styles.composerIcon, showStickers && { opacity: 0.5 }]}>🏷</Text>
+                    <Text style={styles.composerIcon}>{showStickers ? '⌨️' : '🏷'}</Text>
                   </TouchableOpacity>
                 )}
                 <TextInput
+                  ref={inputRef}
                   style={styles.composerInput}
                   placeholder={editing ? 'Editar mensaje' : 'Mensaje'}
                   placeholderTextColor={colors.textMuted}
@@ -532,6 +554,8 @@ export function ChatScreen({ state, peer }: { state: ClientState; peer: string }
               styles={styles}
               colors={colors}
               onSend={(id) => {
+                // Al mandarlo se cierra el panel y vuelve el teclado para seguir escribiendo
+                backToKeyboard();
                 client.sendStickerImage(peer, id).catch((e) => Alert.alert('No se pudo mandar el sticker', String((e as Error)?.message ?? e)));
               }}
             />
