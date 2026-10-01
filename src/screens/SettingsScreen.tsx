@@ -197,6 +197,10 @@ export function SettingsScreen({ onClose }: { onClose: () => void }) {
             </View>
             <Switch value={previewsOn} onValueChange={togglePreviews} />
           </View>
+          <TouchableOpacity style={styles.secondaryButton} onPress={() => client.testPushNotifications()} activeOpacity={0.8}>
+            <Text style={styles.secondaryButtonText}>🔔 PROBAR NOTIFICACIONES</Text>
+          </TouchableOpacity>
+          {clientState.pushTest && <Text style={[styles.settingsHint, { marginTop: 8, marginBottom: 8 }]}>{clientState.pushTest}</Text>}
           <View style={styles.settingsRow}>
             <View style={{ flex: 1, marginRight: 12 }}>
               <Text style={styles.settingsLabel}>Indicador de "escribiendo…"</Text>

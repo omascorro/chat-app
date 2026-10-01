@@ -71,7 +71,7 @@ const commands: Record<string, (...args: any[]) => Promise<unknown>> = {
   },
   async state() {
     const s = client.getSnapshot();
-    return { connected: s.connected, contacts: s.contacts, timers: s.timers, typing: s.typing, pins: (s as any).pins };
+    return { connected: s.connected, contacts: s.contacts, timers: s.timers, typing: s.typing, pins: (s as any).pins, pushTest: s.pushTest };
   },
   async diagnostics() {
     return client.getDiagnostics();
@@ -162,6 +162,9 @@ const commands: Record<string, (...args: any[]) => Promise<unknown>> = {
     const { getDeviceKey } = require('../../src/lib/preview') as typeof import('../../src/lib/preview');
     const key = await getDeviceKey();
     return key ? Buffer.from(key).toString('base64') : null;
+  },
+  async allowPush(on: boolean) {
+    control.pushGranted = on;
   },
   async hangUploads(on: boolean) {
     control.hangUploads = on;

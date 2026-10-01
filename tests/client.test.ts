@@ -1,7 +1,7 @@
 // Pruebas de la app completa: dos telefonos (procesos con el ChatClient real) hablando por el servidor real.
 // Uso: npm run test:client   (necesita la carpeta chat-backend al lado de chat-app, o AETERNA_BACKEND_DIR)
 import assert from 'node:assert/strict';
-import { deletedObjects, Device, startServer, waitFor } from './harness/world';
+import { deletedObjects, Device, pushes, startServer, waitFor } from './harness/world';
 
 type Msg = {
   id: string; fromMe: boolean; kind: string; body: string; status: string; deleted: boolean; editedAt: number | null;
@@ -290,6 +290,32 @@ test('nota de voz: el otro telefono la descarga y la descifra identica (con rell
   assert.equal(await b.run('decryptMedia', na, voice.id), original, 'beto escucha exactamente lo que grabo ana');
   const mine = (await msgs(a, nb)).find((m) => m.kind === 'voice')!;
   assert.equal(await a.run('decryptMedia', nb, mine.id), original, 'y ana su propia nota');
+  await Promise.all([a.close(), b.close()]);
+});
+
+test('notificaciones: con la app en segundo plano llega el aviso, y la prueba de Ajustes reporta el resultado', async () => {
+  const [a, b, na, nb] = await pair();
+  await b.run('allowPush', true);
+  // Al volver a conectar, beto registra su token (antes solo se intentaba una vez por arranque)
+  await b.run('dropConnection');
+  await waitFor('beto reconecta', () => b.run<any>('state'), (s) => s.connected);
+  await sleep(500);
+  await b.run('background', true);
+  await sleep(300);
+  const before = pushes.length;
+  await a.run('sendText', nb, 'hola, estas?');
+  await waitFor('el servidor manda la notificacion a beto', async () => pushes.slice(before), (l) => l.some((p) => p.to === `ExponentPushToken[${nb}]`));
+  const push = pushes.slice(before).find((p) => p.to === `ExponentPushToken[${nb}]`);
+  assert.ok(!JSON.stringify(push).includes('hola'), 'la notificacion no lleva el mensaje legible');
+  await b.run('background', false);
+  // Prueba desde Ajustes
+  await b.run('call', 'testPushNotifications', 0);
+  const s = await waitFor('resultado de la prueba', () => b.run<any>('state'), (st) => /^✅/.test(st.pushTest ?? ''), 15000);
+  assert.match(s.pushTest, /la aceptaron/);
+  // Sin permiso, la prueba lo dice claro
+  await a.run('call', 'testPushNotifications', 0);
+  const sa = await a.run<any>('state');
+  assert.match(sa.pushTest, /desactivadas/);
   await Promise.all([a.close(), b.close()]);
 });
 

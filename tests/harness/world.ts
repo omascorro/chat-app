@@ -105,11 +105,29 @@ export async function startServer(): Promise<{ url: string; storage: Map<string,
   // El servidor escribe mucho en consola; en las pruebas se silencia
   const log = console.log;
   console.log = () => {};
+  // Expo push falso: se guarda cada notificacion que el servidor manda y todas se aceptan
+  const realFetch = globalThis.fetch;
+  globalThis.fetch = (async (input: any, init?: any) => {
+    const url = String(input?.url ?? input);
+    if (url.startsWith('https://exp.host/')) {
+      const body = JSON.parse(init?.body ?? '{}');
+      if (url.endsWith('/push/send')) {
+        pushes.push(body);
+        return new Response(JSON.stringify({ data: { status: 'ok', id: 'ticket-' + pushes.length } }));
+      }
+      const data = Object.fromEntries((body.ids ?? []).map((id: string) => [id, { status: 'ok' }]));
+      return new Response(JSON.stringify({ data }));
+    }
+    return realFetch(input, init);
+  }) as typeof fetch;
   require(serverFile);
   await new Promise((r) => setTimeout(r, 1200));
   console.log = log;
   return { url: `ws://127.0.0.1:${port}`, storage };
 }
+
+// Notificaciones que el servidor le pidio a Expo enviar
+export const pushes: any[] = [];
 
 export class Device {
   private proc: ChildProcess;
@@ -120,7 +138,7 @@ export class Device {
   constructor(readonly name: string, serverUrl: string) {
     this.proc = fork(path.join(__dirname, 'device.ts'), [], {
       execArgv: ['--import', 'tsx'],
-      env: { ...process.env, AETERNA_TEST_SERVER: serverUrl },
+      env: { ...process.env, AETERNA_TEST_SERVER: serverUrl, AETERNA_DEVICE_NAME: name },
       stdio: ['ignore', 'ignore', 'inherit', 'ipc'],
     });
     this.ready = new Promise((resolve) => {

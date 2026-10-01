@@ -95,6 +95,7 @@ export type ClientState = {
   pins: Record<string, string[]>; // mensajes fijados por conversacion (el mas reciente primero, maximo 3)
   pinnedMessages: ChatMessage[]; // los fijados de la conversacion abierta
   jumpTo: string | null; // mensaje al que la pantalla del chat debe saltar (busqueda o fijado)
+  pushTest: string | null; // resultado de la prueba de notificaciones (Ajustes)
 };
 
 type ServerUser = { username: string; online: boolean; profilePicture: string | null; identity: PublicIdentity | null };
@@ -123,6 +124,7 @@ const INITIAL_STATE: ClientState = {
   recoveryCode: null,
   updateRequired: false,
   openPeer: null,
+  pushTest: null,
   messages: [],
   cacheEpoch: 0,
   timers: {},
@@ -167,6 +169,9 @@ export class ChatClient {
   private migratingPicture = false;
   private appState: AppStateStatus = AppState.currentState;
   private pushRegistered = false;
+  private pushToken: string | null = null;
+  private askedPushPermission = false;
+  private pushTokenListener: { remove: () => void } | null = null;
   private booted = false;
 
   // ---------- estado para React ----------
@@ -234,6 +239,7 @@ export class ChatClient {
       // Reconectar cada vez perdia las confirmaciones del servidor; ahora solo se reconecta si la conexion no responde.
       this.checkConnection();
       if (this.state.openPeer) this.markConversationRead(this.state.openPeer);
+      this.retryPushRegistration();
     }
   }
 
@@ -460,7 +466,10 @@ export class ChatClient {
       this.send({ type: 'publish-spk', spk: { id: spk.id, pub: spk.pub, sig: spk.sig } });
       this.spkNeedsPublish = false;
     }
-    if (!this.pushRegistered) this.registerForPushNotifications();
+    // El token se manda en cada conexion: si una vez no llego al servidor, las notificaciones dejaban de llegar
+    if (this.pushToken) this.sendPushToken();
+    else if (!this.pushRegistered) this.registerForPushNotifications();
+    else this.retryPushRegistration();
     this.flush();
     this.runUploads();
     this.runDownloads();
@@ -503,20 +512,75 @@ export class ChatClient {
           lightColor: '#6B7A3A',
         });
       }
-      const { status: existingStatus } = await Notifications.getPermissionsAsync();
-      let finalStatus = existingStatus;
-      if (existingStatus !== 'granted') {
+      const existing = await Notifications.getPermissionsAsync();
+      let finalStatus = existing.status;
+      // Se pregunta una sola vez por arranque; despues solo se revisa (por si las activaron en los Ajustes del telefono)
+      if (finalStatus !== 'granted' && !this.askedPushPermission) {
+        this.askedPushPermission = true;
         finalStatus = (await Notifications.requestPermissionsAsync()).status;
       }
       if (finalStatus !== 'granted') return;
       const projectId = Constants.expoConfig?.extra?.eas?.projectId;
       const tokenData = await Notifications.getExpoPushTokenAsync({ projectId });
-      // platform y previews: el servidor manda la vista previa cifrada en el formato que este telefono sabe mostrar
-      this.send({ type: 'register-push-token', token: tokenData.data, platform: Platform.OS, previews: true });
+      this.pushToken = tokenData.data;
+      this.sendPushToken();
+      // Apple/Google pueden cambiar el token (ej. al reinstalar): se vuelve a pedir el de Expo y se manda
+      this.pushTokenListener ??= Notifications.addPushTokenListener(() => {
+        this.pushToken = null;
+        this.pushRegistered = false;
+        if (this.authed) this.registerForPushNotifications();
+      });
     } catch (e) {
       this.pushRegistered = false;
       log('Error registrando notificaciones:', e);
     }
+  }
+
+  // Sin token todavia (sin permiso, o fallo la red): se vuelve a intentar al reconectar o al volver a la app
+  private retryPushRegistration() {
+    if (this.pushToken || !this.authed) return;
+    this.pushRegistered = false;
+    this.registerForPushNotifications();
+  }
+
+  // platform y previews: el servidor manda la vista previa cifrada en el formato que este telefono sabe mostrar
+  private sendPushToken() {
+    if (!this.pushToken || !this.authed) return;
+    this.send({ type: 'register-push-token', token: this.pushToken, platform: Platform.OS, previews: true });
+  }
+
+  // Ajustes > Probar notificaciones: revisa permisos y token aqui, y el servidor manda un aviso a los pocos segundos
+  async testPushNotifications(delayMs = 6000): Promise<void> {
+    const permission = await Notifications.getPermissionsAsync();
+    if (permission.status !== 'granted') {
+      const asked = permission.canAskAgain ? await Notifications.requestPermissionsAsync() : permission;
+      if (asked.status !== 'granted') {
+        this.setState({ pushTest: '❌ Las notificaciones están desactivadas para Aeterna. Actívalas en los Ajustes del teléfono > Aeterna > Notificaciones.' });
+        return;
+      }
+    }
+    if (!this.pushToken) {
+      this.pushRegistered = false;
+      await this.registerForPushNotifications();
+    }
+    if (!this.pushToken) {
+      this.setState({ pushTest: '❌ El teléfono no pudo obtener su código de notificaciones. Revisa la conexión a internet e inténtalo de nuevo.' });
+      return;
+    }
+    this.sendPushToken();
+    if (!this.send({ type: 'test-push', delayMs })) {
+      this.setState({ pushTest: '❌ Sin conexión con el servidor. Inténtalo cuando diga "Conectado".' });
+      return;
+    }
+    this.setState({ pushTest: '⏳ Bloquea el teléfono o sal de la app: en unos segundos debe llegar "Prueba de notificaciones ✅".' });
+  }
+
+  private describePushTest(r: any): string {
+    if (r.ok) return r.delivered ? '✅ El servidor la envió y Apple/Google la aceptaron. Si no apareció, revisa en los Ajustes del teléfono que Aeterna tenga permitidas las notificaciones (y el modo Concentración / No molestar).' : '✅ El servidor la envió. Si no apareció, revisa los permisos de notificaciones de Aeterna en el teléfono.';
+    if (r.stage === 'token') return '❌ ' + r.error + '. Cierra y vuelve a abrir la app e inténtalo de nuevo.';
+    if (r.error === 'DeviceNotRegistered') return '❌ Apple/Google dicen que este teléfono ya no está registrado. Cierra la app por completo, ábrela y prueba otra vez.';
+    if (r.error === 'InvalidCredentials') return '❌ Faltan o vencieron las credenciales de notificaciones de la app en Expo (InvalidCredentials).';
+    return '❌ Falló (' + r.stage + '): ' + r.error;
   }
 
   // ---------- mensajes del servidor ----------
@@ -581,6 +645,9 @@ export class ChatClient {
         }
         return;
       }
+      case 'test-push-result':
+        this.setState({ pushTest: this.describePushTest(data) });
+        return;
       case 'bundle-result':
       case 'add-contact-result': {
         const waiter = this.requestWaiters.get(data.requestId);

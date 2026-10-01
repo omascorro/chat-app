@@ -15,6 +15,7 @@ const cacheDirectory = toUri(path.join(root, 'cache')) + '/';
 export const control = {
   hangUploads: false, // simula una subida que se queda colgada
   uploads: 0,
+  pushGranted: false, // el usuario dio permiso de notificaciones
 };
 
 // ---- expo-sqlite sobre node:sqlite ----
@@ -166,9 +167,10 @@ const MOCKS: Record<string, unknown> = {
     registerTaskAsync: async () => {},
     scheduleNotificationAsync: async () => 'id',
     setNotificationChannelAsync: async () => {},
-    getPermissionsAsync: async () => ({ status: 'denied' }),
-    requestPermissionsAsync: async () => ({ status: 'denied' }),
-    getExpoPushTokenAsync: async () => ({ data: 'ExponentPushToken[prueba]' }),
+    getPermissionsAsync: async () => ({ status: control.pushGranted ? 'granted' : 'denied', canAskAgain: false }),
+    requestPermissionsAsync: async () => ({ status: control.pushGranted ? 'granted' : 'denied' }),
+    getExpoPushTokenAsync: async () => ({ data: `ExponentPushToken[${process.env.AETERNA_DEVICE_NAME ?? 'prueba'}]` }),
+    addPushTokenListener: () => ({ remove() {} }),
   },
   'expo-image-manipulator': {
     SaveFormat: { JPEG: 'jpeg', PNG: 'png' },
