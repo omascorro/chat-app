@@ -101,6 +101,7 @@ export function ChatScreen({ state, peer }: { state: ClientState; peer: string }
   // Saltar a un mensaje (desde la busqueda general o un fijado) y resaltarlo un momento
   const listRef = useRef<FlatList<ChatMessage>>(null);
   const [highlightId, setHighlightId] = useState<string | null>(null);
+  const highlightTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const [pinIndex, setPinIndex] = useState(0);
   const pinned = state.pinnedMessages;
   const pinnedIds = useMemo(() => new Set(pinned.map((m) => m.id)), [pinned]);
@@ -113,9 +114,14 @@ export function ChatScreen({ state, peer }: { state: ClientState; peer: string }
     client.clearJump();
     setHighlightId(target);
     requestAnimationFrame(() => listRef.current?.scrollToIndex({ index, animated: true, viewPosition: 0.5 }));
-    const t = setTimeout(() => setHighlightId(null), 1800);
-    return () => clearTimeout(t);
+    // El temporizador va aparte: clearJump vuelve a correr este efecto, y si se cancelaba aqui el resaltado nunca se quitaba
+    if (highlightTimer.current) clearTimeout(highlightTimer.current);
+    highlightTimer.current = setTimeout(() => setHighlightId(null), 1800);
   }, [state.jumpTo, listData, searching]);
+
+  useEffect(() => () => {
+    if (highlightTimer.current) clearTimeout(highlightTimer.current);
+  }, []);
 
   const goToPinned = () => {
     if (pinned.length === 0) return;
