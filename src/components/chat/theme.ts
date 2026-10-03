@@ -111,16 +111,18 @@ export const THEMES: ThemeDef[] = [
     id: 'privacidad',
     name: 'Privacidad',
     light: {
-      bg: '#CDCDD0', card: '#D4D4D7', primary: '#B4B4B9', accent: '#909097', text: '#6F6F76', textMuted: '#9E9EA4',
+      bg: '#CDCDD0', card: '#D4D4D7', primary: '#8A928C', accent: '#909097', text: '#6F6F76', textMuted: '#9E9EA4',
       // Mis burbujas: un poco mas oscuras y con un leve tono verde gris; las del otro, gris neutro mas claro
       bubbleMine: '#B9C0BB', bubbleTheirs: '#DADADD', border: '#C0C0C4', danger: '#9A6B6B',
-      onPrimary: '#5E5E65', onAccent: '#E6E6E9', onBubbleMine: '#6F6F76', accentOnMine: '#86868D',
+      // Botones (enviar, +): apagados pero que se encuentren a la primera
+      onPrimary: '#F0F2F0', onAccent: '#E6E6E9', onBubbleMine: '#6F6F76', accentOnMine: '#86868D',
     },
     dark: {
-      bg: '#09090A', card: '#101012', primary: '#26262A', accent: '#4A4A51', text: '#5C5C63', textMuted: '#3B3B41',
+      bg: '#09090A', card: '#101012', primary: '#363C38', accent: '#4A4A51', text: '#5C5C63', textMuted: '#3B3B41',
       // Mis burbujas: algo mas claras y con un leve tono verde gris; las del otro, gris neutro casi del fondo
       bubbleMine: '#1C211E', bubbleTheirs: '#131315', border: '#1B1B1E', danger: '#6B3B3B',
-      onPrimary: '#6E6E75', onAccent: '#09090A', onBubbleMine: '#5C5C63', accentOnMine: '#46464D',
+      // Botones (enviar, +): apagados pero que se encuentren a la primera
+      onPrimary: '#B3B9B4', onAccent: '#09090A', onBubbleMine: '#5C5C63', accentOnMine: '#46464D',
     },
   },
 ];

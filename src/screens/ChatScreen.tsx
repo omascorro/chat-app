@@ -606,15 +606,15 @@ export function ChatScreen({ state, peer }: { state: ClientState; peer: string }
               </View>
             )}
             {isRecording ? (
-              <TouchableOpacity style={[styles.composerAction, styles.composerActionRecording]} onPress={stopRecordingAndSend} activeOpacity={0.8}>
+              <TouchableOpacity style={[styles.composerAction, styles.composerActionRecording]} onPress={stopRecordingAndSend} hitSlop={10} activeOpacity={0.8}>
                 <Text style={styles.composerActionIcon}>➤</Text>
               </TouchableOpacity>
             ) : inputText.trim() !== '' || editing ? (
-              <TouchableOpacity style={styles.composerAction} onPress={send} activeOpacity={0.8}>
+              <TouchableOpacity style={styles.composerAction} onPress={send} hitSlop={10} activeOpacity={0.8}>
                 <Text style={styles.composerActionIcon}>{editing ? '✓' : '➤'}</Text>
               </TouchableOpacity>
             ) : (
-              <TouchableOpacity style={styles.composerAction} onPress={startRecording} activeOpacity={0.8}>
+              <TouchableOpacity style={styles.composerAction} onPress={startRecording} hitSlop={10} activeOpacity={0.8}>
                 <Text style={styles.composerActionIcon}>🎤</Text>
               </TouchableOpacity>
             )}
