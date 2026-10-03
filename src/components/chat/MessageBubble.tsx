@@ -95,14 +95,14 @@ export function MessageBubble({ message: item, quoted, me, peer, epoch, styles, 
   const replyId = item.replyTo;
   const quote = replyId ? (
     <TouchableOpacity
-      style={[styles.quoteBox, { flexDirection: 'row', alignItems: 'center' }]}
+      style={[styles.quoteBox, { flexDirection: 'row', alignItems: 'center' }, mine && { borderLeftColor: styles.quoteNameMine.color }]}
       onPress={() => onQuotePress?.(replyId)}
       onLongPress={() => onLongPress(item)}
       delayLongPress={300}
       activeOpacity={0.6}
     >
       <View style={{ flexShrink: 1 }}>
-        <Text style={styles.quoteName}>{quoted ? (quoted.fromMe ? me : peer).toUpperCase() : ''}</Text>
+        <Text style={mine ? styles.quoteNameMine : styles.quoteName}>{quoted ? (quoted.fromMe ? me : peer).toUpperCase() : ''}</Text>
         <Text style={mine ? styles.quoteTextMine : styles.quoteText} numberOfLines={2}>{describeMessage(quoted)}</Text>
       </View>
       {quoted && <QuoteThumb message={quoted} epoch={epoch} />}

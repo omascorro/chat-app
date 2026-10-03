@@ -14,6 +14,7 @@ export type Colors = {
   onPrimary: string; // texto sobre primary y sobre danger
   onAccent: string; // texto sobre accent
   onBubbleMine: string; // texto de mis burbujas
+  accentOnMine?: string; // nombre en las citas dentro de mis burbujas, si el acento no se lee sobre ellas
 };
 
 export type ThemeDef = { id: string; name: string; light: Colors; dark: Colors };
@@ -88,6 +89,21 @@ export const THEMES: ThemeDef[] = [
       bg: '#1C0F14', card: '#2A1720', primary: '#C2587D', accent: '#F0A83A', text: '#F7E6EC', textMuted: '#B28D9A',
       bubbleMine: '#8E3657', bubbleTheirs: '#36202A', border: '#4A2C39', danger: '#E5606E',
       onPrimary: '#FFFFFF', onAccent: '#1C0F14', onBubbleMine: '#FFFFFF',
+    },
+  },
+  {
+    // Negro de la baticueva con el amarillo de la batiseñal
+    id: 'batman',
+    name: 'Batman',
+    light: {
+      bg: '#D7D8DC', card: '#ECEDF0', primary: '#16161A', accent: '#B8860B', text: '#0E0E11', textMuted: '#5C5E66',
+      bubbleMine: '#16161A', bubbleTheirs: '#FFFFFF', border: '#B4B6BD', danger: '#B3261E',
+      onPrimary: '#F5C518', onAccent: '#FFFFFF', onBubbleMine: '#F5C518', accentOnMine: '#F5C518',
+    },
+    dark: {
+      bg: '#08080A', card: '#141418', primary: '#F5C518', accent: '#F5C518', text: '#EDEDF0', textMuted: '#8A8C94',
+      bubbleMine: '#F5C518', bubbleTheirs: '#1E1E24', border: '#2A2A31', danger: '#E5534B',
+      onPrimary: '#08080A', onAccent: '#08080A', onBubbleMine: '#08080A', accentOnMine: '#08080A',
     },
   },
 ];
@@ -406,6 +422,7 @@ export function createStyles(COLORS: Colors) {
       backgroundColor: 'rgba(0,0,0,0.12)', paddingHorizontal: 10, paddingVertical: 6, marginBottom: 6,
     },
     quoteName: { fontSize: 10, fontWeight: '800', color: COLORS.accent, letterSpacing: 0.5 },
+    quoteNameMine: { fontSize: 10, fontWeight: '800', color: COLORS.accentOnMine ?? COLORS.accent, letterSpacing: 0.5 },
     quoteText: { fontSize: 12, color: COLORS.textMuted },
     quoteTextMine: { fontSize: 12, color: COLORS.onBubbleMine, opacity: 0.8 },
     replyBar: {
