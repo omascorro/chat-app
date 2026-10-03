@@ -106,6 +106,21 @@ export const THEMES: ThemeDef[] = [
       onPrimary: '#08080A', onAccent: '#08080A', onBubbleMine: '#08080A', accentOnMine: '#08080A',
     },
   },
+  {
+    // Bajo contraste a proposito: de cerca se lee, pero a quien mira de lado o de lejos le cuesta distinguir el texto
+    id: 'privacidad',
+    name: 'Privacidad',
+    light: {
+      bg: '#CDCDD0', card: '#D4D4D7', primary: '#B4B4B9', accent: '#909097', text: '#6F6F76', textMuted: '#9E9EA4',
+      bubbleMine: '#C4C4C8', bubbleTheirs: '#D1D1D4', border: '#C0C0C4', danger: '#9A6B6B',
+      onPrimary: '#5E5E65', onAccent: '#E6E6E9', onBubbleMine: '#6F6F76', accentOnMine: '#86868D',
+    },
+    dark: {
+      bg: '#09090A', card: '#101012', primary: '#26262A', accent: '#4A4A51', text: '#5C5C63', textMuted: '#3B3B41',
+      bubbleMine: '#141416', bubbleTheirs: '#111113', border: '#1B1B1E', danger: '#6B3B3B',
+      onPrimary: '#6E6E75', onAccent: '#09090A', onBubbleMine: '#5C5C63', accentOnMine: '#46464D',
+    },
+  },
 ];
 
 export const DEFAULT_THEME_ID = 'militar';
