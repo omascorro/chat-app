@@ -35,9 +35,17 @@ export function ChatScreen({ state, peer }: { state: ClientState; peer: string }
   const inputRef = useRef<TextInput>(null);
 
   // Regresar del panel de stickers al teclado (como WhatsApp)
-  const backToKeyboard = () => {
+  const backToKeyboard = (delay = 50) => {
     setShowStickers(false);
-    setTimeout(() => inputRef.current?.focus(), 50);
+    setTimeout(() => inputRef.current?.focus(), delay);
+  };
+
+  // Responder (deslizando a la derecha o desde el menu): se abre el teclado de una vez, como WhatsApp.
+  // Desde el menu se espera a que se cierre la ventana; si no, iOS no deja enfocar la caja de texto.
+  const startReply = (m: ChatMessage, delay = 50) => {
+    setEditing(null);
+    setReplyTo(m);
+    backToKeyboard(delay);
   };
 
   // En Android, el boton de atras cierra primero el panel de stickers
@@ -474,10 +482,7 @@ export function ChatScreen({ state, peer }: { state: ClientState; peer: string }
                 enabled={item.kind !== 'system' && !item.deleted}
                 iconColor={colors.accent}
                 deleteColor={colors.danger}
-                onReply={() => {
-                  setEditing(null);
-                  setReplyTo(item);
-                }}
+                onReply={() => startReply(item)}
                 onDelete={() => confirmSwipeDelete(item)}
               >
                 <MessageBubble
@@ -604,10 +609,7 @@ export function ChatScreen({ state, peer }: { state: ClientState; peer: string }
         me={state.username}
         styles={styles}
         onClose={() => setActionTarget(null)}
-        onReply={(m) => {
-          setEditing(null);
-          setReplyTo(m);
-        }}
+        onReply={(m) => startReply(m, 350)}
         onEdit={startEdit}
         onDeleteForEveryone={confirmDeleteForEveryone}
         onDeleteForMe={(m) => client.deleteForMe(m.id)}
