@@ -63,7 +63,37 @@ export function ChatScreen({ state, peer }: { state: ClientState; peer: string }
   const [replyTo, setReplyTo] = useState<ChatMessage | null>(null);
   const [editing, setEditing] = useState<ChatMessage | null>(null);
   const [actionTarget, setActionTarget] = useState<ChatMessage | null>(null);
-  const [zoomUri, setZoomUri] = useState<string | null>(null);
+  // Visor de fotos: todas las fotos del chat en orden, para pasar de una a otra deslizando (como WhatsApp)
+  const [gallery, setGallery] = useState<{ images: { uri: string }[]; index: number } | null>(null);
+  const [galleryIndex, setGalleryIndex] = useState(0);
+  const openGallery = async (uri: string, messageId: string) => {
+    const photos = messages.filter((m) => m.kind === 'image' && !m.viewOnce && !m.deleted && m.downloadState === 'done' && m.mediaFile && m.media);
+    const pos = photos.findIndex((m) => m.id === messageId);
+    if (pos < 0) {
+      setGalleryIndex(0);
+      setGallery({ images: [{ uri }], index: 0 });
+      return;
+    }
+    // Hasta 30 fotos de cada lado; casi todas ya estan descifradas en la carpeta temporal porque se ven en el chat
+    const around = photos.slice(Math.max(0, pos - 30), pos + 31);
+    const uris = await Promise.all(
+      around.map((m) => (m.id === messageId ? Promise.resolve(uri) : decryptToCache(m.id, 'image', m.mediaFile!, m.media!).catch(() => null))),
+    );
+    const images: { uri: string }[] = [];
+    let index = 0;
+    uris.forEach((u, i) => {
+      if (!u) return;
+      if (around[i].id === messageId) index = images.length;
+      images.push({ uri: u });
+    });
+    setGalleryIndex(index);
+    setGallery({ images, index });
+  };
+
+  // Al ir a segundo plano se borra lo descifrado: el visor se cierra
+  useEffect(() => {
+    setGallery(null);
+  }, [state.cacheEpoch]);
   const [searchOpen, setSearchOpen] = useState(false);
   const [searchQuery, setSearchQuery] = useState('');
   const [searchResults, setSearchResults] = useState<ChatMessage[]>([]);
@@ -494,7 +524,7 @@ export function ChatScreen({ state, peer }: { state: ClientState; peer: string }
                   epoch={state.cacheEpoch}
                   styles={styles}
                   onLongPress={setActionTarget}
-                  onZoom={setZoomUri}
+                  onZoom={openGallery}
                   onRetrySend={(id) => client.retrySend(id)}
                   onRetryDownload={(id) => client.retryDownload(id)}
                   onOpenViewOnce={openViewOnce}
@@ -625,7 +655,23 @@ export function ChatScreen({ state, peer }: { state: ClientState; peer: string }
         }}
         onReact={(m, emoji) => client.react(peer, m.id, emoji)}
       />
-      <ImageViewing images={zoomUri ? [{ uri: zoomUri }] : []} imageIndex={0} visible={!!zoomUri} onRequestClose={() => setZoomUri(null)} />
+      <ImageViewing
+        images={gallery?.images ?? []}
+        imageIndex={gallery?.index ?? 0}
+        visible={!!gallery}
+        onRequestClose={() => setGallery(null)}
+        onImageIndexChange={setGalleryIndex}
+        HeaderComponent={() => (
+          <SafeAreaView edges={['top']} style={{ flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', paddingHorizontal: 16, paddingVertical: 8 }}>
+            <Text style={{ color: '#fff', fontSize: 15, fontWeight: '700' }}>
+              {gallery && gallery.images.length > 1 ? `${galleryIndex + 1} / ${gallery.images.length}` : ''}
+            </Text>
+            <TouchableOpacity onPress={() => setGallery(null)} hitSlop={12} activeOpacity={0.7}>
+              <Text style={{ color: '#fff', fontSize: 26 }}>✕</Text>
+            </TouchableOpacity>
+          </SafeAreaView>
+        )}
+      />
       <ImageViewing
         images={viewOnceOpen ? [{ uri: viewOnceOpen.uri }] : []}
         imageIndex={0}

@@ -33,7 +33,7 @@ type Props = {
   epoch: number;
   styles: ChatStyles;
   onLongPress: (m: ChatMessage) => void;
-  onZoom: (uri: string) => void;
+  onZoom: (uri: string, messageId: string) => void;
   onRetrySend: (id: string) => void;
   onRetryDownload: (id: string) => void;
   onOpenViewOnce: (m: ChatMessage) => void;

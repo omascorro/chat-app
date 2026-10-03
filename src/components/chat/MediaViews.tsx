@@ -71,11 +71,11 @@ export function QuoteThumb({ message, epoch, size = 44 }: { message: ChatMessage
   return <Image source={{ uri }} style={{ width: size, height: size, borderRadius: 8, marginLeft: 8 }} resizeMode={message.kind === 'sticker' ? 'contain' : 'cover'} />;
 }
 
-export function EncryptedImage(props: MediaProps & { onZoom: (uri: string) => void }) {
+export function EncryptedImage(props: MediaProps & { onZoom: (uri: string, messageId: string) => void }) {
   const { uri, error } = useDecryptedUri(props.message, props.epoch);
   if (!uri) return <Placeholder {...props} error={error} />;
   return (
-    <TouchableOpacity onPress={() => props.onZoom(uri)} onLongPress={props.onLongPress} delayLongPress={300} activeOpacity={0.9}>
+    <TouchableOpacity onPress={() => props.onZoom(uri, props.message.id)} onLongPress={props.onLongPress} delayLongPress={300} activeOpacity={0.9}>
       <Image source={{ uri }} style={props.styles.messageImage} resizeMode="cover" />
     </TouchableOpacity>
   );
