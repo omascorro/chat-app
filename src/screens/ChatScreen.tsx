@@ -369,6 +369,8 @@ export function ChatScreen({ state, peer }: { state: ClientState; peer: string }
     setReplyTo(null);
     setEditing(m);
     setInputText(m.body);
+    // Se abre el teclado para editar de una vez (se espera a que se cierre el menu, si no iOS no deja enfocar)
+    backToKeyboard(350);
   };
 
   const confirmDeleteForEveryone = (m: ChatMessage) => {
