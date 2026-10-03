@@ -879,12 +879,29 @@ export class ChatClient {
     if (needed > (this.messageLimit.get(peer) ?? DEFAULT_MESSAGE_LIMIT)) this.messageLimit.set(peer, needed);
   }
 
-  async jumpToMessage(id: string) {
+  // false si el mensaje ya no existe (borrado solo para mi, chat vaciado o temporal que expiro)
+  async jumpToMessage(id: string): Promise<boolean> {
     const peer = this.state.openPeer;
-    if (!peer) return;
+    const store = this.store;
+    if (!peer || !store) return false;
+    const target = await store.getMessage(id);
+    if (!target || target.peer !== peer) return false;
     await this.ensureLoaded(peer, id);
     await this.reloadMessages(peer);
     this.setState({ jumpTo: id });
+    return true;
+  }
+
+  // Mensajes citados en respuestas que no estan entre los cargados (mas viejos)
+  async getMessagesByIds(peer: string, ids: string[]): Promise<ChatMessage[]> {
+    const store = this.store;
+    if (!store) return [];
+    const found: ChatMessage[] = [];
+    for (const id of ids) {
+      const m = await store.getMessage(id);
+      if (m && m.peer === peer) found.push(m);
+    }
+    return found;
   }
 
   clearJump() {

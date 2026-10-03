@@ -319,6 +319,23 @@ test('notificaciones: con la app en segundo plano llega el aviso, y la prueba de
   await Promise.all([a.close(), b.close()]);
 });
 
+test('responder a una foto: la cita lleva al mensaje original, y si ya no existe lo dice', async () => {
+  const [a, b, na, nb] = await pair();
+  await a.run('sendImage', nb);
+  const got = await waitFor('beto recibe la foto', () => msgs(b, na), (l) => l.some((m) => m.kind === 'image' && m.hasFile));
+  const photo = got.find((m) => m.kind === 'image')!;
+  await b.run('sendText', na, 'que bonita', photo.id);
+  const atA = await waitFor('ana recibe la respuesta', () => msgs(a, nb), (l) => l.some((m) => m.body === 'que bonita'));
+  assert.equal(atA.find((m) => m.body === 'que bonita')!.replyTo, photo.id, 'la respuesta apunta a la foto');
+  await a.run('open', nb);
+  assert.equal(await a.run('call', 'jumpToMessage', photo.id), true, 'tocar la cita salta a la foto');
+  const found = await a.run<any[]>('call', 'getMessagesByIds', nb, [photo.id, 'no-existe']);
+  assert.deepEqual(found.map((m) => m.id), [photo.id], 'encuentra la citada aunque no este cargada');
+  await a.run('call', 'deleteForMe', photo.id);
+  assert.equal(await a.run('call', 'jumpToMessage', photo.id), false, 'si la borre, avisa que ya no esta');
+  await Promise.all([a.close(), b.close()]);
+});
+
 test('vaciar chat: solo en mi telefono, o para los dos (con fotos y fijados)', async () => {
   const [a, b, na, nb] = await pair();
   await a.run('sendText', nb, 'mensaje 1');

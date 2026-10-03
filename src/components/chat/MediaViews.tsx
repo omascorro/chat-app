@@ -56,6 +56,21 @@ function Placeholder({ message, styles, onRetryDownload, onLongPress, error }: M
   );
 }
 
+// Miniatura del mensaje citado en una respuesta (como WhatsApp). Las fotos de "ver una vez" nunca se muestran.
+export function QuoteThumb({ message, epoch, size = 44 }: { message: ChatMessage; epoch: number; size?: number }) {
+  const showImage = !message.deleted && !message.viewOnce && (message.kind === 'image' || (message.kind === 'sticker' && !!message.media));
+  const { uri } = useDecryptedUri(showImage ? message : { ...message, downloadState: 'none' }, epoch);
+  if (!message.deleted && !message.viewOnce && message.kind === 'video') {
+    return (
+      <View style={{ width: size, height: size, borderRadius: 8, marginLeft: 8, backgroundColor: 'rgba(0,0,0,0.25)', alignItems: 'center', justifyContent: 'center' }}>
+        <Text style={{ fontSize: size * 0.45 }}>🎬</Text>
+      </View>
+    );
+  }
+  if (!showImage || !uri) return null;
+  return <Image source={{ uri }} style={{ width: size, height: size, borderRadius: 8, marginLeft: 8 }} resizeMode={message.kind === 'sticker' ? 'contain' : 'cover'} />;
+}
+
 export function EncryptedImage(props: MediaProps & { onZoom: (uri: string) => void }) {
   const { uri, error } = useDecryptedUri(props.message, props.epoch);
   if (!uri) return <Placeholder {...props} error={error} />;

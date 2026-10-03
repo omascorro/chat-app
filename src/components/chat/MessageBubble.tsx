@@ -1,7 +1,7 @@
 import { Text, TouchableOpacity, View } from 'react-native';
 import { ChatMessage } from '../../lib/types';
 import { LinkableText } from './LinkableText';
-import { EncryptedImage, EncryptedSticker, EncryptedVideo, EncryptedVoice } from './MediaViews';
+import { EncryptedImage, EncryptedSticker, EncryptedVideo, EncryptedVoice, QuoteThumb } from './MediaViews';
 import { ChatStyles } from './useChatTheme';
 
 function formatTime(ts: number) {
@@ -19,7 +19,7 @@ export function describeMessage(m: ChatMessage | null): string {
     case 'video':
       return '🎬 Video';
     case 'voice':
-      return '🎤 Nota de voz';
+      return m.duration ? `🎤 Nota de voz (${Math.floor(m.duration / 60)}:${String(m.duration % 60).padStart(2, '0')})` : '🎤 Nota de voz';
     default:
       return m.body.length > 80 ? m.body.slice(0, 80) + '…' : m.body;
   }
@@ -38,6 +38,7 @@ type Props = {
   onRetryDownload: (id: string) => void;
   onOpenViewOnce: (m: ChatMessage) => void;
   highlighted?: boolean; // al saltar a este mensaje (busqueda o fijado)
+  onQuotePress?: (id: string) => void; // tocar la cita lleva al mensaje original
   pinned?: boolean;
 };
 
@@ -60,7 +61,7 @@ function ViewOnceContent({ item, styles, onOpen, onRetryDownload, onLongPress }:
   );
 }
 
-export function MessageBubble({ message: item, quoted, me, peer, epoch, styles, onLongPress, onZoom, onRetrySend, onRetryDownload, onOpenViewOnce, highlighted, pinned }: Props) {
+export function MessageBubble({ message: item, quoted, me, peer, epoch, styles, onLongPress, onZoom, onRetrySend, onRetryDownload, onOpenViewOnce, highlighted, pinned, onQuotePress }: Props) {
   if (item.kind === 'system') {
     return (
       <View style={styles.systemRow}>
@@ -91,11 +92,21 @@ export function MessageBubble({ message: item, quoted, me, peer, epoch, styles, 
     content = <LinkableText text={item.body} textStyle={mine ? styles.myText : styles.theirText} linkStyle={mine ? styles.myLinkText : styles.theirLinkText} />;
   }
 
-  const quote = item.replyTo ? (
-    <View style={styles.quoteBox}>
-      <Text style={styles.quoteName}>{quoted ? (quoted.fromMe ? me : peer).toUpperCase() : ''}</Text>
-      <Text style={mine ? styles.quoteTextMine : styles.quoteText} numberOfLines={2}>{describeMessage(quoted)}</Text>
-    </View>
+  const replyId = item.replyTo;
+  const quote = replyId ? (
+    <TouchableOpacity
+      style={[styles.quoteBox, { flexDirection: 'row', alignItems: 'center' }]}
+      onPress={() => onQuotePress?.(replyId)}
+      onLongPress={() => onLongPress(item)}
+      delayLongPress={300}
+      activeOpacity={0.6}
+    >
+      <View style={{ flexShrink: 1 }}>
+        <Text style={styles.quoteName}>{quoted ? (quoted.fromMe ? me : peer).toUpperCase() : ''}</Text>
+        <Text style={mine ? styles.quoteTextMine : styles.quoteText} numberOfLines={2}>{describeMessage(quoted)}</Text>
+      </View>
+      {quoted && <QuoteThumb message={quoted} epoch={epoch} />}
+    </TouchableOpacity>
   ) : null;
 
   return (

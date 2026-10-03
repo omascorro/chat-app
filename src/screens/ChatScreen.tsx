@@ -7,6 +7,7 @@ import ImageViewing from 'react-native-image-viewing';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { Avatar } from '../components/chat/Avatar';
 import { describeMessage, MessageBubble } from '../components/chat/MessageBubble';
+import { QuoteThumb } from '../components/chat/MediaViews';
 import { MessageActions, OptionsModal } from '../components/chat/Modals';
 import { useChatTheme } from '../components/chat/useChatTheme';
 import { client, ClientState } from '../lib/client';
@@ -66,6 +67,32 @@ export function ChatScreen({ state, peer }: { state: ClientState; peer: string }
 
   const messages = state.messages;
   const byId = useMemo(() => new Map(messages.map((m) => [m.id, m])), [messages]);
+  // Mensajes citados que son mas viejos que los cargados: se buscan aparte para que la cita no diga "no disponible"
+  const [olderQuoted, setOlderQuoted] = useState<Map<string, ChatMessage>>(new Map());
+  useEffect(() => {
+    const missing = [...new Set(messages.map((m) => m.replyTo).filter((id): id is string => !!id && !byId.has(id) && !olderQuoted.has(id)))];
+    if (missing.length === 0) return;
+    let cancelled = false;
+    client.getMessagesByIds(peer, missing).then((found) => {
+      if (cancelled || found.length === 0) return;
+      setOlderQuoted((prev) => new Map([...prev, ...found.map((m) => [m.id, m] as const)]));
+    });
+    return () => {
+      cancelled = true;
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [messages, byId, peer]);
+  const quotedOf = (id: string | null) => (id ? byId.get(id) ?? olderQuoted.get(id) ?? null : null);
+
+  // Tocar la cita de una respuesta lleva al mensaje original y lo resalta (como WhatsApp)
+  const goToQuoted = async (id: string) => {
+    if (searchOpen) {
+      setSearchOpen(false);
+      setSearchQuery('');
+    }
+    const found = await client.jumpToMessage(id);
+    if (!found) Alert.alert('Mensaje no disponible', 'El mensaje original ya no está en este chat.');
+  };
   const searching = searchOpen && searchQuery.trim().length > 0;
   // La lista va invertida (como WhatsApp): empieza abajo, en el ultimo mensaje, sin tener que desplazarse
   // despues de dibujarse. Por eso los datos van del mas nuevo al mas viejo.
@@ -449,7 +476,8 @@ export function ChatScreen({ state, peer }: { state: ClientState; peer: string }
               >
                 <MessageBubble
                   message={item}
-                  quoted={item.replyTo ? byId.get(item.replyTo) ?? null : null}
+                  quoted={quotedOf(item.replyTo)}
+                  onQuotePress={goToQuoted}
                   me={state.username}
                   peer={peer}
                   epoch={state.cacheEpoch}
@@ -469,10 +497,13 @@ export function ChatScreen({ state, peer }: { state: ClientState; peer: string }
 
           {(replyTo || editing) && (
             <View style={styles.replyBar}>
+              <TouchableOpacity style={{ flex: 1, flexDirection: 'row', alignItems: 'center' }} disabled={!replyTo || !!editing} onPress={() => replyTo && goToQuoted(replyTo.id)} activeOpacity={0.6}>
               <View style={{ flex: 1 }}>
                 <Text style={styles.replyBarLabel}>{editing ? 'EDITANDO MENSAJE' : `RESPONDIENDO A ${(replyTo!.fromMe ? state.username : peer).toUpperCase()}`}</Text>
                 <Text style={styles.replyBarText} numberOfLines={1}>{describeMessage(editing || replyTo)}</Text>
               </View>
+              {replyTo && !editing && <QuoteThumb message={replyTo} epoch={state.cacheEpoch} size={40} />}
+              </TouchableOpacity>
               <TouchableOpacity
                 onPress={() => {
                   if (editing) setInputText('');
