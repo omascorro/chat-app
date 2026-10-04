@@ -1,6 +1,7 @@
 import * as DocumentPicker from 'expo-document-picker';
 import * as LocalAuthentication from 'expo-local-authentication';
 import * as Sharing from 'expo-sharing';
+import * as Updates from 'expo-updates';
 import { StatusBar } from 'expo-status-bar';
 import { useEffect, useState, useSyncExternalStore } from 'react';
 import { ActivityIndicator, Alert, ScrollView, Switch, Text, TouchableOpacity, View } from 'react-native';
@@ -242,6 +243,13 @@ export function SettingsScreen({ onClose }: { onClose: () => void }) {
                   {item.lastError ? `\n   Último error: ${item.lastError}` : ''}
                 </Text>
               ))}
+              {/* Para saber si este telefono tiene el build y la actualizacion mas recientes */}
+              <Text style={[styles.settingsHint, { marginTop: 6 }]}>
+                Versión: {(Updates.runtimeVersion ?? 'desarrollo').slice(0, 7)} ·{' '}
+                {Updates.isEmbeddedLaunch || !Updates.createdAt
+                  ? 'sin actualizaciones descargadas'
+                  : 'actualización del ' + Updates.createdAt.toLocaleDateString() + ' ' + Updates.createdAt.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
+              </Text>
               {diagnostics.lastUploadError && (
                 <Text style={[styles.settingsHint, { marginTop: 6 }]}>Último archivo que no se pudo subir: {diagnostics.lastUploadError}</Text>
               )}
