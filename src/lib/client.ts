@@ -20,7 +20,7 @@ import {
 import { log } from './log';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { resetAppearance } from './appearance';
-import { registerBackgroundNotifications } from './backgroundNotifications';
+import { ensureMessagesChannel, registerBackgroundNotifications } from './backgroundNotifications';
 import { encryptPreview, getOrCreateDeviceKey, keyFingerprint, previewText, resetDeviceKey } from './preview';
 
 function fromB64Safe(value: string): Uint8Array | null {
@@ -505,8 +505,10 @@ export class ChatClient {
     try {
       await registerBackgroundNotifications();
       if (Platform.OS === 'android') {
+        await ensureMessagesChannel();
+        // Canal viejo: solo lo usa el aviso generico ("Tienes un mensaje nuevo"), que no muestra contenido
         await Notifications.setNotificationChannelAsync('default', {
-          name: 'Mensajes',
+          name: 'Avisos generales',
           importance: Notifications.AndroidImportance.MAX,
           vibrationPattern: [0, 250, 250, 250],
           lightColor: '#6B7A3A',

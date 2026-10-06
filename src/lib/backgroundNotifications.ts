@@ -8,6 +8,21 @@ import { decryptPreview, getDeviceKey, getPreviewsEnabled } from './preview';
 
 export const PREVIEW_TASK = 'aeterna-notification-preview';
 
+// Canal de los mensajes: en la pantalla de bloqueo solo dice que hay una notificacion de Aeterna; quien escribio y
+// el texto se ven al desbloquear (como el iPhone por defecto). Asi nadie lee una contraseña con el telefono bloqueado.
+export const MESSAGES_CHANNEL = 'mensajes';
+
+export async function ensureMessagesChannel() {
+  if (Platform.OS !== 'android') return;
+  await Notifications.setNotificationChannelAsync(MESSAGES_CHANNEL, {
+    name: 'Mensajes',
+    importance: Notifications.AndroidImportance.MAX,
+    vibrationPattern: [0, 250, 250, 250],
+    lightColor: '#6B7A3A',
+    lockscreenVisibility: Notifications.AndroidNotificationVisibility.PRIVATE,
+  });
+}
+
 // El formato en que llegan los datos cambia segun la version y el estado de la app; se busca "p" donde este
 function findPreviewField(value: unknown, depth = 0): string | null {
   if (depth > 5 || value == null) return null;
@@ -49,9 +64,15 @@ TaskManager.defineTask(PREVIEW_TASK, async ({ data, error }) => {
   } catch {
     // se queda el aviso generico
   }
+  // El canal se crea aqui tambien: esta tarea puede correr antes de que la app se abra despues de actualizarse
+  try {
+    await ensureMessagesChannel();
+  } catch {
+    // si no se pudo, Android la manda al canal por defecto
+  }
   await Notifications.scheduleNotificationAsync({
     content: { title, body, sound: 'default' },
-    trigger: { channelId: 'default' },
+    trigger: { channelId: MESSAGES_CHANNEL },
   });
 });
 

@@ -155,6 +155,10 @@ const commands: Record<string, (...args: any[]) => Promise<unknown>> = {
     const c = client as any;
     return encryptPicture(await c.profileKey(c.store), base64);
   },
+  async readBackupText(uri: string) {
+    const fs = require('node:fs') as typeof import('node:fs');
+    return fs.readFileSync(decodeURIComponent(uri.replace(/^file:\/\//, '')), 'utf8');
+  },
   async testPng() {
     return PNG.toString('base64');
   },

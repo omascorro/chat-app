@@ -1,14 +1,19 @@
 // Respaldo del historial cifrado con una contraseña (PBKDF2-SHA512 + XSalsa20-Poly1305).
 // No incluye las llaves de identidad: al restaurar en otro telefono se crea una identidad nueva, como en Signal.
 import * as FileSystem from 'expo-file-system/legacy';
+import { pbkdf2Async } from '@noble/hashes/pbkdf2.js';
+import { sha512 } from '@noble/hashes/sha2.js';
 import nacl from 'tweetnacl';
-import { bytesToUtf8, fromB64, pbkdf2Sha512, toB64, utf8Bytes } from './crypto/primitives';
+import { bytesToUtf8, fromB64, toB64, utf8Bytes } from './crypto/primitives';
 import { Store } from './db';
 import { fileExists, readMediaFileBase64, writeMediaFileBase64 } from './media';
 import { ChatMessage } from './types';
 
 const FORMAT = 'aeterna-backup';
-const ITERATIONS = 30000;
+// 210 000 (recomendacion actual de OWASP para PBKDF2-SHA512): adivinar la contraseña de un respaldo robado cuesta
+// 7 veces mas que con los 30 000 de antes. Los respaldos viejos guardan su numero y se siguen abriendo.
+const ITERATIONS = 210_000;
+const MAX_ITERATIONS = 5_000_000; // un archivo alterado no puede dejar la app calculando para siempre
 export const BACKUP_PASSWORD_MIN_LENGTH = 10;
 
 type BackupContent = {
@@ -20,8 +25,10 @@ type BackupContent = {
 
 type BackupFile = { format: string; v: 1; salt: string; iterations: number; nonce: string; data: string };
 
-function deriveKey(password: string, salt: Uint8Array, iterations: number): Uint8Array {
-  return pbkdf2Sha512(utf8Bytes(password), salt, iterations, 32);
+// Version asincrona: cede el control cada pocos milisegundos para que la pantalla no se congele mientras calcula
+function deriveKey(password: string, salt: Uint8Array, iterations: number): Promise<Uint8Array> {
+  if (!Number.isInteger(iterations) || iterations < 1000 || iterations > MAX_ITERATIONS) throw new Error('Ese archivo no es un respaldo de Aeterna');
+  return pbkdf2Async(sha512, utf8Bytes(password), salt, { c: iterations, dkLen: 32, asyncTick: 20 });
 }
 
 export async function exportBackup(store: Store, username: string, password: string, includeMedia: boolean): Promise<string> {
@@ -37,7 +44,7 @@ export async function exportBackup(store: Store, username: string, password: str
 
   const salt = nacl.randomBytes(16);
   const nonce = nacl.randomBytes(24);
-  const key = deriveKey(password, salt, ITERATIONS);
+  const key = await deriveKey(password, salt, ITERATIONS);
   const data = nacl.secretbox(utf8Bytes(JSON.stringify(content)), nonce, key);
   const file: BackupFile = { format: FORMAT, v: 1, salt: toB64(salt), iterations: ITERATIONS, nonce: toB64(nonce), data: toB64(data) };
 
@@ -56,7 +63,7 @@ export async function importBackup(store: Store, uri: string, password: string):
   }
   if (file.format !== FORMAT || file.v !== 1) throw new Error('Ese archivo no es un respaldo de Aeterna');
 
-  const key = deriveKey(password, fromB64(file.salt), file.iterations);
+  const key = await deriveKey(password, fromB64(file.salt), file.iterations);
   const plain = nacl.secretbox.open(fromB64(file.data), fromB64(file.nonce), key);
   if (!plain) throw new Error('Contraseña incorrecta o respaldo dañado');
   const content: BackupContent = JSON.parse(bytesToUtf8(plain));

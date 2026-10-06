@@ -157,7 +157,15 @@ export class Device {
   run<T = any>(cmd: string, ...args: unknown[]): Promise<T> {
     const id = this.nextId++;
     return new Promise<T>((resolve, reject) => {
-      this.pending.set(id, { resolve, reject });
+      // Una orden que no responde falla con su nombre en vez de dejar la prueba colgada para siempre
+      const timer = setTimeout(() => {
+        this.pending.delete(id);
+        reject(new Error(`[${this.name}] la orden "${cmd}" ${cmd === 'call' ? String(args[0]) : ''} no respondio en 60 s`));
+      }, 60_000);
+      this.pending.set(id, {
+        resolve: (v) => (clearTimeout(timer), resolve(v)),
+        reject: (e) => (clearTimeout(timer), reject(e)),
+      });
       this.proc.send({ id, cmd, args });
     });
   }

@@ -164,6 +164,7 @@ const MOCKS: Record<string, unknown> = {
   'expo-task-manager': { defineTask: () => {} },
   'expo-notifications': {
     AndroidImportance: { MAX: 5 },
+    AndroidNotificationVisibility: { PRIVATE: 2 },
     registerTaskAsync: async () => {},
     scheduleNotificationAsync: async () => 'id',
     setNotificationChannelAsync: async () => {},

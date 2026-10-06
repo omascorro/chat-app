@@ -336,6 +336,27 @@ test('responder a una foto: la cita lleva al mensaje original, y si ya no existe
   await Promise.all([a.close(), b.close()]);
 });
 
+test('respaldo cifrado: guarda texto y fotos, se restaura igual y rechaza una contraseña equivocada', async () => {
+  const [a, b, na, nb] = await pair();
+  await a.run('sendText', nb, 'mi contraseña secreta es 1234');
+  await a.run('sendImage', nb);
+  const sent = await waitFor('ana manda texto y foto', () => msgs(a, nb), (l) => l.filter((m) => m.status !== 'pending' && m.kind !== 'system').length === 2);
+  const text = sent.find((m) => m.kind === 'text')!;
+  const photo = sent.find((m) => m.kind === 'image')!;
+  const uri = await a.run<string>('call', 'exportBackup', 'respaldo-muy-seguro', true);
+  const raw = await a.run<string>('readBackupText', uri);
+  assert.ok(!raw.includes('secreta'), 'el archivo del respaldo no tiene el texto legible');
+  await a.run('call', 'deleteForMe', text.id);
+  await a.run('call', 'deleteForMe', photo.id);
+  await assert.rejects(a.run('call', 'importBackup', uri, 'otra-contraseña-mala'), /Contraseña incorrecta/);
+  const restored = await a.run<number>('call', 'importBackup', uri, 'respaldo-muy-seguro');
+  assert.equal(restored, 2, 'se restauran los 2 mensajes');
+  const after = await msgs(a, nb);
+  assert.ok(after.some((m) => m.id === text.id && m.body === 'mi contraseña secreta es 1234'), 'vuelve el texto');
+  assert.equal(await a.run('decryptMedia', nb, photo.id), await a.run('testPng'), 'y la foto, identica');
+  await Promise.all([a.close(), b.close()]);
+});
+
 test('vaciar chat: solo en mi telefono, o para los dos (con fotos y fijados)', async () => {
   const [a, b, na, nb] = await pair();
   await a.run('sendText', nb, 'mensaje 1');
