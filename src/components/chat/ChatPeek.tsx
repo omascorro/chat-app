@@ -1,7 +1,7 @@
 // Vista previa de un chat al mantener presionado un contacto (como WhatsApp): se ven los ultimos mensajes sin abrir
 // la conversacion, asi que no se marcan como leidos ni el otro ve las palomitas azules.
 import { useEffect, useRef, useState } from 'react';
-import { ActivityIndicator, FlatList, Modal, Pressable, Text, TouchableOpacity, View } from 'react-native';
+import { ActivityIndicator, FlatList, Modal, Pressable, StyleSheet, Text, TouchableOpacity, View } from 'react-native';
 import { client } from '../../lib/client';
 import { ChatMessage, Contact } from '../../lib/types';
 import { Avatar } from './Avatar';
@@ -24,12 +24,14 @@ export function ChatPeek({ contact, epoch, styles, colors, onClose, onOpen }: {
 }) {
   const [messages, setMessages] = useState<ChatMessage[] | null>(null);
   const listRef = useRef<FlatList<ChatMessage>>(null);
+  const scrolledToEnd = useRef(false);
 
   useEffect(() => {
     setMessages(null);
+    scrolledToEnd.current = false;
     if (!contact) return;
     let cancelled = false;
-    client.previewMessages(contact.username).then((list) => !cancelled && setMessages(list.filter((m) => m.kind !== 'system')));
+    client.previewMessages(contact.username, 60).then((list) => !cancelled && setMessages(list.filter((m) => m.kind !== 'system')));
     return () => {
       cancelled = true;
     };
@@ -39,9 +41,10 @@ export function ChatPeek({ contact, epoch, styles, colors, onClose, onOpen }: {
 
   return (
     <Modal visible transparent animationType="fade" onRequestClose={onClose}>
-      <Pressable style={[styles.modalBackdrop, { padding: 16 }]} onPress={onClose}>
-        {/* Tocar dentro de la tarjeta no la cierra */}
-        <Pressable style={[styles.modalCard, { padding: 0, overflow: 'hidden', maxHeight: '75%' }]} onPress={() => {}}>
+      <View style={[styles.modalBackdrop, { padding: 16 }]}>
+        {/* El fondo va aparte (detras): si la tarjeta estuviera dentro de algo tocable, la lista no podria desplazarse */}
+        <Pressable style={StyleSheet.absoluteFill} onPress={onClose} />
+        <View style={[styles.modalCard, { padding: 0, overflow: 'hidden', maxHeight: '80%' }]}>
           <View style={{ flexDirection: 'row', alignItems: 'center', padding: 14, borderBottomWidth: 1, borderBottomColor: colors.border, backgroundColor: colors.card }}>
             <Avatar name={contact.username} size={40} photoBase64={contact.profilePicture} round />
             <View style={{ marginLeft: 10, flex: 1 }}>
@@ -61,9 +64,15 @@ export function ChatPeek({ contact, epoch, styles, colors, onClose, onOpen }: {
               ref={listRef}
               data={messages}
               keyExtractor={(m) => m.id}
-              style={{ flexGrow: 0 }}
+              style={{ flexGrow: 0, flexShrink: 1 }}
+              showsVerticalScrollIndicator
               contentContainerStyle={{ padding: 12 }}
-              onContentSizeChange={() => listRef.current?.scrollToEnd({ animated: false })}
+              // Abre en los mas recientes una sola vez; despues no se mueve mientras subes
+              onContentSizeChange={() => {
+                if (scrolledToEnd.current) return;
+                scrolledToEnd.current = true;
+                listRef.current?.scrollToEnd({ animated: false });
+              }}
               renderItem={({ item }) => {
                 const mine = item.fromMe;
                 const isText = (item.kind === 'text' || (item.kind === 'sticker' && !item.media)) && !item.deleted;
@@ -94,8 +103,8 @@ export function ChatPeek({ contact, epoch, styles, colors, onClose, onOpen }: {
               <Text style={styles.modalButtonText}>ABRIR CHAT</Text>
             </TouchableOpacity>
           </View>
-        </Pressable>
-      </Pressable>
+        </View>
+      </View>
     </Modal>
   );
 }
