@@ -894,6 +894,15 @@ export class ChatClient {
     return true;
   }
 
+  // Vista previa desde la lista de chats (mantener presionado): ultimos mensajes SIN abrir el chat, asi que no se
+  // marcan como leidos ni se avisa al otro, como en WhatsApp
+  async previewMessages(peer: string, limit = 25): Promise<ChatMessage[]> {
+    const store = this.store;
+    if (!store) return [];
+    const now = Date.now();
+    return (await store.getMessages(peer, limit)).filter((m) => !m.expiresAt || m.expiresAt > now);
+  }
+
   // Mensajes citados en respuestas que no estan entre los cargados (mas viejos)
   async getMessagesByIds(peer: string, ids: string[]): Promise<ChatMessage[]> {
     const store = this.store;

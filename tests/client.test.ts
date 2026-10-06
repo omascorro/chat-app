@@ -357,6 +357,23 @@ test('respaldo cifrado: guarda texto y fotos, se restaura igual y rechaza una co
   await Promise.all([a.close(), b.close()]);
 });
 
+test('vista previa del chat (mantener presionado): muestra los mensajes sin marcarlos como leidos', async () => {
+  const [a, b, na, nb] = await pair();
+  await b.run('open', null);
+  await a.run('sendText', nb, 'mensaje uno');
+  await a.run('sendText', nb, 'mensaje dos');
+  await waitFor('ana ve sus mensajes enviados', () => msgs(a, nb), (l) => l.filter((m) => m.fromMe && m.status === 'sent').length === 2);
+  await waitFor('beto los recibe', () => b.run<any>('state'), (st) => st.contacts.some((c: any) => c.username === na && c.unread === 2));
+  const preview = await b.run<any[]>('call', 'previewMessages', na);
+  assert.deepEqual(preview.filter((m) => m.kind === 'text').map((m) => m.body), ['mensaje uno', 'mensaje dos'], 'se ven en la vista previa');
+  await sleep(800);
+  const atA = await msgs(a, nb);
+  assert.ok(atA.filter((m) => m.fromMe).every((m) => m.status !== 'read'), 'ana no los ve como leidos');
+  const st = await b.run<any>('state');
+  assert.equal(st.contacts.find((c: any) => c.username === na).unread, 2, 'siguen sin leer para beto');
+  await Promise.all([a.close(), b.close()]);
+});
+
 test('vaciar chat: solo en mi telefono, o para los dos (con fotos y fijados)', async () => {
   const [a, b, na, nb] = await pair();
   await a.run('sendText', nb, 'mensaje 1');

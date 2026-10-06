@@ -1,3 +1,4 @@
+import * as Haptics from 'expo-haptics';
 import * as ImageManipulator from 'expo-image-manipulator';
 import * as ImagePicker from 'expo-image-picker';
 import { StatusBar } from 'expo-status-bar';
@@ -5,16 +6,18 @@ import { useEffect, useState } from 'react';
 import { Alert, FlatList, Text, TextInput, TouchableOpacity, View } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { Avatar } from '../components/chat/Avatar';
+import { ChatPeek } from '../components/chat/ChatPeek';
 import { PromptModal } from '../components/chat/Modals';
 import { SearchResults } from '../components/chat/SearchResults';
 import { useChatTheme } from '../components/chat/useChatTheme';
 import { client, ClientState } from '../lib/client';
 import { deleteIfAppFile } from '../lib/media';
-import { ChatMessage } from '../lib/types';
+import { ChatMessage, Contact } from '../lib/types';
 
 export function ContactsScreen({ state, onOpenSettings }: { state: ClientState; onOpenSettings: () => void }) {
   const { isDark, colors, styles } = useChatTheme();
   const [adding, setAdding] = useState(false);
+  const [peek, setPeek] = useState<Contact | null>(null);
   const [query, setQuery] = useState('');
   const [results, setResults] = useState<ChatMessage[]>([]);
   const searching = query.trim().length >= 2;
@@ -133,7 +136,16 @@ export function ContactsScreen({ state, onOpenSettings }: { state: ClientState; 
             </View>
           }
           renderItem={({ item }) => (
-            <TouchableOpacity style={styles.contactCard} onPress={() => client.openConversation(item.username)} activeOpacity={0.7}>
+            <TouchableOpacity
+              style={styles.contactCard}
+              onPress={() => client.openConversation(item.username)}
+              onLongPress={() => {
+                Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium).catch(() => {});
+                setPeek(item);
+              }}
+              delayLongPress={350}
+              activeOpacity={0.7}
+            >
               <View>
                 <Avatar name={item.username} size={48} photoBase64={item.profilePicture} round />
                 <View style={[styles.contactOnlineDot, { backgroundColor: item.online ? colors.primary : colors.textMuted }]} />
@@ -168,6 +180,17 @@ export function ContactsScreen({ state, onOpenSettings }: { state: ClientState; 
           <Text style={styles.fabIcon}>＋</Text>
         </TouchableOpacity>
       </SafeAreaView>
+      <ChatPeek
+        contact={peek}
+        epoch={state.cacheEpoch}
+        styles={styles}
+        colors={colors}
+        onClose={() => setPeek(null)}
+        onOpen={(peer) => {
+          setPeek(null);
+          client.openConversation(peer);
+        }}
+      />
       <PromptModal
         visible={adding}
         title="AGREGAR CONTACTO"
