@@ -1,6 +1,6 @@
 // Vista previa de un chat al mantener presionado un contacto (como WhatsApp): se ven los ultimos mensajes sin abrir
 // la conversacion, asi que no se marcan como leidos ni el otro ve las palomitas azules.
-import { useEffect, useRef, useState } from 'react';
+import { useEffect, useState } from 'react';
 import { ActivityIndicator, FlatList, Modal, Pressable, StyleSheet, Text, TouchableOpacity, View } from 'react-native';
 import { client } from '../../lib/client';
 import { ChatMessage, Contact } from '../../lib/types';
@@ -9,6 +9,8 @@ import { QuoteThumb } from './MediaViews';
 import { describeMessage } from './MessageBubble';
 import { Colors } from './theme';
 import { ChatStyles } from './useChatTheme';
+
+const PREVIEW_COUNT = 21; // el ultimo mensaje y 20 anteriores
 
 function formatTime(ts: number) {
   return new Date(ts).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
@@ -23,15 +25,15 @@ export function ChatPeek({ contact, epoch, styles, colors, onClose, onOpen }: {
   onOpen: (peer: string) => void;
 }) {
   const [messages, setMessages] = useState<ChatMessage[] | null>(null);
-  const listRef = useRef<FlatList<ChatMessage>>(null);
-  const scrolledToEnd = useRef(false);
 
   useEffect(() => {
     setMessages(null);
-    scrolledToEnd.current = false;
     if (!contact) return;
     let cancelled = false;
-    client.previewMessages(contact.username, 60).then((list) => !cancelled && setMessages(list.filter((m) => m.kind !== 'system')));
+    // El ultimo mensaje y hasta 20 anteriores; al reves (el mas nuevo primero) para la lista invertida
+    client.previewMessages(contact.username, 40).then((list) => {
+      if (!cancelled) setMessages(list.filter((m) => m.kind !== 'system').slice(-PREVIEW_COUNT).reverse());
+    });
     return () => {
       cancelled = true;
     };
@@ -60,19 +62,14 @@ export function ChatPeek({ contact, epoch, styles, colors, onClose, onOpen }: {
           ) : messages.length === 0 ? (
             <Text style={[styles.contactSub, { textAlign: 'center', margin: 32 }]}>Todavía no hay mensajes</Text>
           ) : (
+            // Invertida: abre siempre en el ultimo mensaje (abajo) y se sube para ver los anteriores
             <FlatList
-              ref={listRef}
+              inverted
               data={messages}
               keyExtractor={(m) => m.id}
               style={{ flexGrow: 0, flexShrink: 1 }}
               showsVerticalScrollIndicator
               contentContainerStyle={{ padding: 12 }}
-              // Abre en los mas recientes una sola vez; despues no se mueve mientras subes
-              onContentSizeChange={() => {
-                if (scrolledToEnd.current) return;
-                scrolledToEnd.current = true;
-                listRef.current?.scrollToEnd({ animated: false });
-              }}
               renderItem={({ item }) => {
                 const mine = item.fromMe;
                 const isText = (item.kind === 'text' || (item.kind === 'sticker' && !item.media)) && !item.deleted;
