@@ -227,6 +227,23 @@ export function ChatScreen({ state, peer }: { state: ClientState; peer: string }
 
   // Saltar a un mensaje (desde la busqueda general o un fijado) y resaltarlo un momento
   const listRef = useRef<FlatList<ChatMessage>>(null);
+
+  // Boton flotante para bajar al ultimo mensaje (como WhatsApp). La lista esta invertida: offset 0 = lo mas nuevo.
+  const [awayFromLatest, setAwayFromLatest] = useState(false);
+  const awayRef = useRef(false);
+  const [newWhileAway, setNewWhileAway] = useState(0);
+  const newestIdRef = useRef<string | null>(null);
+  const onListScroll = (y: number) => {
+    const away = y > 600;
+    if (away === awayRef.current) return;
+    awayRef.current = away;
+    setAwayFromLatest(away);
+    if (!away) setNewWhileAway(0);
+  };
+  const scrollToLatest = () => {
+    listRef.current?.scrollToOffset({ offset: 0, animated: true });
+    setNewWhileAway(0);
+  };
   const [highlightId, setHighlightId] = useState<string | null>(null);
   const highlightTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const [pinIndex, setPinIndex] = useState(0);
@@ -249,6 +266,17 @@ export function ChatScreen({ state, peer }: { state: ClientState; peer: string }
   useEffect(() => () => {
     if (highlightTimer.current) clearTimeout(highlightTimer.current);
   }, []);
+
+  useEffect(() => {
+    const newest = messages[messages.length - 1];
+    if (!newest || newest.id === newestIdRef.current) return;
+    const first = newestIdRef.current === null;
+    newestIdRef.current = newest.id;
+    if (first || !awayRef.current) return;
+    if (newest.fromMe) scrollToLatest();
+    else if (newest.kind !== 'system') setNewWhileAway((n) => n + 1);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [messages]);
 
   const goToPinned = () => {
     if (pinned.length === 0) return;
@@ -620,6 +648,8 @@ export function ChatScreen({ state, peer }: { state: ClientState; peer: string }
             keyExtractor={(item) => item.id}
             contentContainerStyle={styles.messageList}
             keyboardShouldPersistTaps="handled"
+            onScroll={(e) => onListScroll(e.nativeEvent.contentOffset.y)}
+            scrollEventThrottle={100}
             initialNumToRender={15}
             maxToRenderPerBatch={8}
             updateCellsBatchingPeriod={40}
@@ -640,6 +670,25 @@ export function ChatScreen({ state, peer }: { state: ClientState; peer: string }
               />
             )}
           />
+          {awayFromLatest && !searching && (
+            <TouchableOpacity
+              onPress={scrollToLatest}
+              activeOpacity={0.8}
+              hitSlop={8}
+              style={{
+                position: 'absolute', right: 14, bottom: 14, width: 42, height: 42, borderRadius: 21,
+                backgroundColor: colors.card, borderWidth: 1, borderColor: colors.border, alignItems: 'center', justifyContent: 'center',
+                shadowColor: '#000', shadowOpacity: 0.25, shadowRadius: 4, shadowOffset: { width: 0, height: 2 }, elevation: 4,
+              }}
+            >
+              <Text style={{ fontSize: 20, color: colors.text, marginTop: -2 }}>⌄</Text>
+              {newWhileAway > 0 && (
+                <View style={{ position: 'absolute', top: -6, right: -4, minWidth: 20, height: 20, borderRadius: 10, paddingHorizontal: 5, backgroundColor: colors.accent, alignItems: 'center', justifyContent: 'center' }}>
+                  <Text style={{ fontSize: 11, fontWeight: '800', color: colors.onAccent }}>{newWhileAway > 99 ? '99+' : newWhileAway}</Text>
+                </View>
+              )}
+            </TouchableOpacity>
+          )}
           </ChatWallpaper>
 
           {(replyTo || editing) && (
