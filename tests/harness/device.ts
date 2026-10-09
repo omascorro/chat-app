@@ -170,6 +170,18 @@ const commands: Record<string, (...args: any[]) => Promise<unknown>> = {
     const uri = makeTestFile(`grande-${Date.now()}.mp4`, Buffer.alloc(megabytes * 1024 * 1024, 1));
     await client.sendMedia(peer, uri, 'video');
   },
+  // Al salir de la app se borra lo descifrado, menos la nota de voz que esta sonando
+  async wipeKeepsPlaying() {
+    const media = require('../../src/lib/media') as typeof import('../../src/lib/media');
+    const playing = await media.writeStickerToCache('sonando', PNG.toString('base64'));
+    const other = await media.writeStickerToCache('otra', PNG.toString('base64'));
+    media.keepWhilePlaying(playing, true);
+    await media.wipeCache();
+    const result = { playing: await media.fileExists(playing), other: await media.fileExists(other) };
+    media.keepWhilePlaying(playing, false);
+    await media.wipeCache();
+    return { ...result, afterStop: await media.fileExists(playing) };
+  },
   async testPng() {
     return PNG.toString('base64');
   },

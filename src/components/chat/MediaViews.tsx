@@ -1,19 +1,21 @@
 import { useAudioPlayer, useAudioPlayerStatus } from 'expo-audio';
 import { useVideoPlayer, VideoView } from 'expo-video';
 import { useEffect, useMemo, useState } from 'react';
-import { Image, Pressable, Text, TouchableOpacity, View } from 'react-native';
+import { AppState, Image, Pressable, Text, TouchableOpacity, View } from 'react-native';
 import { preparePlayback } from '../../lib/audioMode';
-import { decryptToCache } from '../../lib/media';
+import { decryptToCache, deleteFile, keepWhilePlaying } from '../../lib/media';
 import { ChatMessage, MediaKind } from '../../lib/types';
 import { ChatStyles } from './useChatTheme';
 
 // Descifra el archivo a la carpeta temporal cuando se va a mostrar. `epoch` cambia cuando esa carpeta se borra.
-function useDecryptedUri(message: ChatMessage, epoch: number) {
+// keepUri: las notas de voz no sueltan su archivo cuando cambia epoch (al volver a la app); si no, el reproductor se
+// recreaba y el audio que seguia sonando en segundo plano se cortaba.
+function useDecryptedUri(message: ChatMessage, epoch: number, keepUri = false) {
   const [uri, setUri] = useState<string | null>(null);
   const [error, setError] = useState(false);
   useEffect(() => {
     let cancelled = false;
-    setUri(null);
+    if (!keepUri) setUri(null);
     setError(false);
     if (!message.mediaFile || !message.media || message.downloadState !== 'done') return;
     // Los stickers son imagenes (PNG)
@@ -141,6 +143,25 @@ function VoicePlayerView({ uri, seed, duration, textColor, onLongPress }: { uri:
   const player = useAudioPlayer(uri, { updateInterval: 100 });
   const status = useAudioPlayerStatus(player);
   const bars = useMemo(() => waveform(seed), [seed]);
+
+  // Mientras suena: su archivo no se borra al salir de la app, y aparecen los controles en la pantalla de bloqueo
+  // (en Android eso ademas mantiene vivo el audio en segundo plano). No dice de quien es, por privacidad.
+  // En curso = sonando o pausada a la mitad (se puede reanudar desde la pantalla de bloqueo)
+  const ended = status.didJustFinish || (status.duration > 0 && status.currentTime >= status.duration - 0.05);
+  const inProgress = status.playing || (status.currentTime > 0 && !ended);
+  useEffect(() => {
+    keepWhilePlaying(uri, inProgress);
+    try {
+      if (inProgress) player.setActiveForLockScreen(true, { title: 'Nota de voz', artist: 'Aeterna' });
+      else player.setActiveForLockScreen(false);
+    } catch {
+      // sin controles en la pantalla de bloqueo; el audio sigue igual
+    }
+    // Termino con la app en segundo plano: la copia descifrada no se queda en el telefono
+    if (!inProgress && AppState.currentState !== 'active') deleteFile(uri);
+  }, [inProgress, uri, player]);
+
+  useEffect(() => () => keepWhilePlaying(uri, false), [uri]);
   const [width, setWidth] = useState(0);
 
   const total = status.duration > 0 ? status.duration : duration || 0;
@@ -198,7 +219,7 @@ function VoicePlayerView({ uri, seed, duration, textColor, onLongPress }: { uri:
 }
 
 export function EncryptedVoice(props: MediaProps & { textColor: string }) {
-  const { uri, error } = useDecryptedUri(props.message, props.epoch);
+  const { uri, error } = useDecryptedUri(props.message, props.epoch, true);
   if (!uri) return <Placeholder {...props} error={error} />;
   return <VoicePlayerView key={uri} uri={uri} seed={props.message.id} duration={props.message.duration} textColor={props.textColor} onLongPress={props.onLongPress} />;
 }

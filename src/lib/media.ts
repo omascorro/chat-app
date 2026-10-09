@@ -215,8 +215,32 @@ export async function removeFromCache(messageId: string) {
   for (const ext of Object.values(EXTENSIONS)) await deleteFile(`${CACHE_DIR}${messageId}.${ext}`);
 }
 
+// Notas de voz sonando ahora: su copia descifrada no se borra al salir de la app (si no, se cortaria el audio).
+// Se borra en cuanto termina o se deja de usar.
+const inUse = new Set<string>();
+
+export function keepWhilePlaying(uri: string, playing: boolean) {
+  if (playing) inUse.add(uri);
+  else inUse.delete(uri);
+}
+
+export function isInUse(uri: string): boolean {
+  return inUse.has(uri);
+}
+
 export async function wipeCache() {
-  await deleteFile(CACHE_DIR);
+  if (inUse.size === 0) {
+    await deleteFile(CACHE_DIR);
+    return;
+  }
+  try {
+    for (const name of await FileSystem.readDirectoryAsync(CACHE_DIR)) {
+      const uri = `${CACHE_DIR}${name}`;
+      if (!inUse.has(uri)) await deleteFile(uri);
+    }
+  } catch {
+    // la carpeta no existia
+  }
 }
 
 // Al arrancar la app: borra copias SIN CIFRAR que otras librerias dejan si algo se interrumpe a medias

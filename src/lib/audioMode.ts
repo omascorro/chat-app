@@ -20,7 +20,8 @@ export async function preparePlayback() {
   // Cambiar el modo mientras se graba detendria la grabacion
   if (recording) return;
   try {
-    await setAudioModeAsync({ playsInSilentMode: true, allowsRecording: false, interruptionMode: 'doNotMix' });
+    // shouldPlayInBackground: la nota de voz sigue sonando si sales de la app o bloqueas el telefono
+    await setAudioModeAsync({ playsInSilentMode: true, allowsRecording: false, interruptionMode: 'doNotMix', shouldPlayInBackground: true });
   } catch (e) {
     log('No se pudo configurar el audio para reproducir:', e);
   }

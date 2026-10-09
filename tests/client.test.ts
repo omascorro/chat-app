@@ -390,6 +390,12 @@ test('contestar un sticker con otro sticker; videos de mas de 45 MB se rechazan 
   await Promise.all([a.close(), b.close()]);
 });
 
+test('nota de voz en segundo plano: al salir de la app no se borra la que esta sonando (las demas si)', async () => {
+  const [a, b] = await pair();
+  assert.deepEqual(await a.run('wipeKeepsPlaying'), { playing: true, other: false, afterStop: false });
+  await Promise.all([a.close(), b.close()]);
+});
+
 test('vaciar chat: solo en mi telefono, o para los dos (con fotos y fijados)', async () => {
   const [a, b, na, nb] = await pair();
   await a.run('sendText', nb, 'mensaje 1');
