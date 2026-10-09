@@ -98,6 +98,17 @@ const fileSystem = {
     const res = await fetch(url, { method: opts.httpMethod ?? 'POST', headers: opts.headers, body: fs.readFileSync(toPath(fileUri)) });
     return { status: res.status, body: await res.text(), headers: {}, mimeType: null };
   },
+  // Subida con progreso: usa la subida de arriba y avisa 100 % al terminar
+  createUploadTask: (url: string, fileUri: string, opts: { httpMethod?: string; headers?: Record<string, string> }, cb?: (p: { totalBytesSent: number; totalBytesExpectedToSend: number }) => void) => ({
+    uploadAsync: async () => {
+      const size = fs.statSync(toPath(fileUri)).size;
+      cb?.({ totalBytesSent: Math.floor(size / 2), totalBytesExpectedToSend: size });
+      const result = await fileSystem.uploadAsync(url, fileUri, opts);
+      cb?.({ totalBytesSent: size, totalBytesExpectedToSend: size });
+      return result;
+    },
+    cancelAsync: async () => {},
+  }),
   downloadAsync: async (url: string, fileUri: string, opts?: { headers?: Record<string, string> }) => {
     const res = await fetch(url, { headers: opts?.headers });
     if (res.ok) {

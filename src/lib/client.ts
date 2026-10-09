@@ -36,6 +36,8 @@ import {
   deleteFile,
   downloadMedia,
   importPlainFile,
+  fileSize,
+  MAX_MEDIA_BYTES,
   MediaAuth,
   readFileBase64,
   removeFromCache,
@@ -96,6 +98,7 @@ export type ClientState = {
   pinnedMessages: ChatMessage[]; // los fijados de la conversacion abierta
   jumpTo: string | null; // mensaje al que la pantalla del chat debe saltar (busqueda o fijado)
   pushTest: string | null; // resultado de la prueba de notificaciones (Ajustes)
+  uploadProgress: Record<string, number>; // mensaje -> porcentaje subido (fotos y videos que se estan subiendo)
 };
 
 type ServerUser = { username: string; online: boolean; profilePicture: string | null; identity: PublicIdentity | null };
@@ -125,6 +128,7 @@ const INITIAL_STATE: ClientState = {
   updateRequired: false,
   openPeer: null,
   pushTest: null,
+  uploadProgress: {},
   messages: [],
   cacheEpoch: 0,
   timers: {},
@@ -1457,18 +1461,24 @@ export class ChatClient {
   }
 
   // Se manda como una foto cifrada, pero se muestra sin burbuja
-  async sendStickerImage(peer: string, stickerId: string) {
+  async sendStickerImage(peer: string, stickerId: string, options: { replyTo?: string | null } = {}) {
     const store = this.store;
     if (!store) return;
     const row = (await store.listStickers()).find((s) => s.id === stickerId);
     if (!row) return;
-    const message = this.newOutgoing(peer, 'sticker', '');
+    // Tambien se puede contestar con un sticker
+    const message = this.newOutgoing(peer, 'sticker', '', { replyTo: options.replyTo ?? null });
     const tempUri = await writeStickerToCache(`send_${message.id}`, row.data);
     const { media, mediaFile } = await importPlainFile(message.id, tempUri, 'image', true);
     await this.queueOutgoing({ ...message, media, mediaFile, downloadState: 'done' });
   }
 
   async sendMedia(peer: string, plainUri: string, kind: MediaKind, options: { duration?: number; replyTo?: string | null; viewOnce?: boolean } = {}) {
+    // Se avisa de una vez, antes de cifrar: si no, un video enorme fallaba despues de varios minutos subiendo
+    const bytes = await fileSize(plainUri);
+    if (bytes > MAX_MEDIA_BYTES) {
+      throw new Error(`${kind === 'video' ? 'El video' : 'El archivo'} pesa ${Math.round(bytes / 1048576)} MB y el máximo es ${Math.round(MAX_MEDIA_BYTES / 1048576)} MB. ${kind === 'video' ? 'Elige uno más corto o recórtalo antes de enviarlo.' : ''}`.trim());
+    }
     const message = this.newOutgoing(peer, kind, '', {
       duration: options.duration ?? null,
       replyTo: options.replyTo ?? null,
@@ -1642,11 +1652,13 @@ export class ChatClient {
         try {
           const auth = this.mediaAuth();
           if (!auth) break;
-          payload.media = await uploadMedia(message.mediaFile, payload.media, auth, message.peer);
+          payload.media = await uploadMedia(message.mediaFile, payload.media, auth, message.peer, (fraction) => this.setUploadProgress(message.id, fraction));
           await store.updateOutbox(item.id, JSON.stringify(payload), item.attempts);
           await store.setMedia(message.id, payload.media, message.mediaFile, 'done');
           uploadedSomething = true;
+          this.setUploadProgress(message.id, null);
         } catch (e) {
+          this.setUploadProgress(message.id, null);
           const error = String((e as Error)?.message ?? e);
           log('Error subiendo un archivo:', error);
           const attempts = item.attempts + 1;
@@ -1665,6 +1677,20 @@ export class ChatClient {
       this.uploading = false;
     }
     if (uploadedSomething) this.flush();
+  }
+
+  // Porcentaje en la burbuja; solo se actualiza cada 5 % para no redibujar el chat a cada rato
+  private setUploadProgress(id: string, fraction: number | null) {
+    const current = this.state.uploadProgress;
+    if (fraction === null) {
+      if (!(id in current)) return;
+      const { [id]: _, ...rest } = current;
+      this.setState({ uploadProgress: rest });
+      return;
+    }
+    const percent = Math.min(99, Math.floor(fraction * 100));
+    if (current[id] !== undefined && percent - current[id] < 5) return;
+    this.setState({ uploadProgress: { ...current, [id]: percent } });
   }
 
   private scheduleRetry() {

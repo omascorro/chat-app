@@ -13,6 +13,7 @@ export type MediaRef = {
   path?: string;
   url?: string;
   pad?: 1; // el contenido cifrado lleva relleno para ocultar el tamaño real (ver media.ts)
+  size?: number; // bytes del archivo cifrado (ya con relleno), para calcular el tiempo de descarga
 };
 
 export type ChatMessage = {

@@ -374,6 +374,22 @@ test('vista previa del chat (mantener presionado): muestra los mensajes sin marc
   await Promise.all([a.close(), b.close()]);
 });
 
+test('contestar un sticker con otro sticker; videos de mas de 45 MB se rechazan de una vez; el que recibe sabe el tamaño', async () => {
+  const [a, b, na, nb] = await pair();
+  const stickerB = await b.run<string>('addSticker');
+  await b.run('call', 'sendStickerImage', na, stickerB);
+  const got = await waitFor('ana recibe el sticker', () => msgs(a, nb), (l) => l.some((m) => m.kind === 'sticker' && m.hasFile));
+  const received = got.find((m) => m.kind === 'sticker')!;
+  const stickerA = await a.run<string>('addSticker');
+  await a.run('call', 'sendStickerImage', nb, stickerA, { replyTo: received.id });
+  const atB = await waitFor('beto recibe la respuesta con sticker', () => msgs(b, na), (l) => l.some((m) => m.kind === 'sticker' && !m.fromMe));
+  assert.equal(atB.find((m) => m.kind === 'sticker' && !m.fromMe)!.replyTo, received.id, 'el sticker responde al sticker');
+  const media = await b.run<any>('mediaOf', na, atB.find((m) => m.kind === 'sticker' && !m.fromMe)!.id);
+  assert.ok(media?.size > 0, 'el mensaje dice cuanto pesa el archivo');
+  await assert.rejects(a.run('sendBigVideo', nb, 46), /pesa 46 MB y el máximo es 45 MB/);
+  await Promise.all([a.close(), b.close()]);
+});
+
 test('vaciar chat: solo en mi telefono, o para los dos (con fotos y fijados)', async () => {
   const [a, b, na, nb] = await pair();
   await a.run('sendText', nb, 'mensaje 1');

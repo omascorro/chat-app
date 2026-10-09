@@ -22,7 +22,26 @@ const CACHE_DIR = `${FileSystem.cacheDirectory}mc/`;
 
 const EXTENSIONS: Record<MediaKind, string> = { image: 'jpg', video: 'mp4', voice: 'm4a' };
 // Las pruebas automaticas los acortan
-export const MEDIA_TIMEOUTS = { upload: 90_000, download: 120_000 };
+export const MEDIA_TIMEOUTS = { upload: 90_000, download: 120_000, minBytesPerSecond: 48 * 1024 };
+// El servidor acepta hasta 50 MB; con el relleno y el cifrado, 45 MB de archivo original caben con margen
+export const MAX_MEDIA_BYTES = 45 * 1024 * 1024;
+
+// El limite de tiempo crece con el tamaño (como minimo ~0.4 Mbps). Con uno fijo de 90 s los videos grandes nunca
+// terminaban: se cancelaban y empezaban de cero una y otra vez.
+function timeoutFor(bytes: number, base: number): number {
+  // El tamaño puede venir del otro telefono: se limita a lo que el servidor acepta
+  const capped = Math.min(Math.max(0, Number(bytes) || 0), 50 * 1024 * 1024);
+  return Math.max(base, Math.ceil(capped / MEDIA_TIMEOUTS.minBytesPerSecond) * 1000);
+}
+
+export async function fileSize(uri: string): Promise<number> {
+  try {
+    const info = await FileSystem.getInfoAsync(uri);
+    return info.exists && 'size' in info ? info.size ?? 0 : 0;
+  } catch {
+    return 0;
+  }
+}
 
 // fetch no tiene limite de tiempo: sin esto una subida colgada detenia la app para siempre
 export function withTimeout<T>(promise: Promise<T>, ms: number, message: string): Promise<T> {
@@ -102,19 +121,36 @@ export async function deleteIfAppFile(uri: string) {
 
 // Sube la copia cifrada, con un nombre aleatorio que no dice nada del mensaje. El sistema del telefono la manda
 // directo desde el archivo (sin cargarla entera en memoria). El servidor anota para quien es: nadie mas lo puede bajar.
-export async function uploadMedia(mediaFile: string, media: MediaRef, auth: MediaAuth, recipient?: string): Promise<MediaRef> {
+export async function uploadMedia(
+  mediaFile: string,
+  media: MediaRef,
+  auth: MediaAuth,
+  recipient?: string,
+  onProgress?: (fraction: number) => void,
+): Promise<MediaRef> {
   const path = `${randomHex(16)}.bin`;
-  const result = await withTimeout(
-    FileSystem.uploadAsync(mediaUrl(media, path), mediaFile, {
+  const size = await fileSize(mediaFile);
+  const task = FileSystem.createUploadTask(
+    mediaUrl(media, path),
+    mediaFile,
+    {
       httpMethod: 'PUT',
       uploadType: FileSystem.FileSystemUploadType.BINARY_CONTENT,
       headers: { ...authHeaders(auth), 'Content-Type': 'application/octet-stream', ...(recipient ? { 'X-Recipient': recipient } : {}) },
-    }),
-    MEDIA_TIMEOUTS.upload,
-    'La subida del archivo tardó demasiado',
+    },
+    (p) => onProgress?.(p.totalBytesExpectedToSend > 0 ? p.totalBytesSent / p.totalBytesExpectedToSend : 0),
   );
+  let result: FileSystem.FileSystemUploadResult | null | undefined;
+  try {
+    result = await withTimeout(task.uploadAsync(), timeoutFor(size, MEDIA_TIMEOUTS.upload), 'La subida del archivo tardó demasiado');
+  } catch (e) {
+    task.cancelAsync().catch(() => {});
+    throw e;
+  }
+  if (!result) throw new Error('La subida se canceló');
   if (result.status !== 200) throw new Error(`El servidor rechazó el archivo (HTTP ${result.status}${result.body ? ': ' + result.body.slice(0, 80) : ''})`);
-  return { bucket: media.bucket, key: media.key, nonce: media.nonce, ...(media.pad ? { pad: 1 as const } : {}), path };
+  // size: para que el que recibe sepa cuanto tiempo darle a la descarga
+  return { bucket: media.bucket, key: media.key, nonce: media.nonce, ...(media.pad ? { pad: 1 as const } : {}), path, ...(size ? { size } : {}) };
 }
 
 // Descarga el archivo cifrado, comprueba que descifra bien y lo guarda tal cual (cifrado)
@@ -126,7 +162,7 @@ export async function downloadMedia(messageId: string, media: MediaRef, auth: Me
   const mediaFile = `${MEDIA_DIR}${messageId}.enc`;
   const result = await withTimeout(
     FileSystem.downloadAsync(mediaUrl(media, path), mediaFile, { headers: authHeaders(auth) }),
-    MEDIA_TIMEOUTS.download,
+    timeoutFor(media.size ?? 0, MEDIA_TIMEOUTS.download),
     'La descarga del archivo tardó demasiado',
   );
   if (result.status !== 200) {

@@ -39,6 +39,7 @@ type Props = {
   onOpenViewOnce: (m: ChatMessage) => void;
   highlighted?: boolean; // al saltar a este mensaje (busqueda o fijado)
   onQuotePress?: (id: string) => void; // tocar la cita lleva al mensaje original
+  uploadPercent?: number; // foto o video que se esta subiendo
   pinned?: boolean;
 };
 
@@ -61,7 +62,7 @@ function ViewOnceContent({ item, styles, onOpen, onRetryDownload, onLongPress }:
   );
 }
 
-export function MessageBubble({ message: item, quoted, me, peer, epoch, styles, onLongPress, onZoom, onRetrySend, onRetryDownload, onOpenViewOnce, highlighted, pinned, onQuotePress }: Props) {
+export function MessageBubble({ message: item, quoted, me, peer, epoch, styles, onLongPress, onZoom, onRetrySend, onRetryDownload, onOpenViewOnce, highlighted, pinned, onQuotePress, uploadPercent }: Props) {
   if (item.kind === 'system') {
     return (
       <View style={styles.systemRow}>
@@ -148,6 +149,7 @@ export function MessageBubble({ message: item, quoted, me, peer, epoch, styles, 
             <Text style={styles.checkmarkFailed}>⚠ NO ENVIADO · REINTENTAR</Text>
           </TouchableOpacity>
         )}
+        {mine && item.status === 'pending' && uploadPercent !== undefined && <Text style={styles.timestamp}>⬆ Subiendo {uploadPercent} % </Text>}
         {mine && item.status === 'pending' && <Text style={styles.checkmark}>🕓</Text>}
         {mine && (item.status === 'sent' || item.status === 'read') && (
           <Text style={[styles.checkmark, item.status === 'read' && styles.checkmarkRead]}>{item.status === 'read' ? '✓✓' : '✓'}</Text>

@@ -244,7 +244,14 @@ export function ChatScreen({ state, peer }: { state: ClientState; peer: string }
   };
 
   const pickMedia = async (source: 'camera' | 'library') => {
-    const options: ImagePicker.ImagePickerOptions = { mediaTypes: ['images', 'videos'], quality: 0.4, videoMaxDuration: 30 };
+    const options: ImagePicker.ImagePickerOptions = {
+      mediaTypes: ['images', 'videos'],
+      quality: 0.4,
+      videoMaxDuration: 30,
+      // iPhone: los videos se comprimen (antes iban en calidad original y pesaban decenas de MB). Android no lo permite.
+      videoExportPreset: ImagePicker.VideoExportPreset.H264_960x540,
+      videoQuality: ImagePicker.UIImagePickerControllerQualityType.Medium,
+    };
     let result: ImagePicker.ImagePickerResult;
     if (source === 'camera') {
       const permission = await ImagePicker.requestCameraPermissionsAsync();
@@ -531,6 +538,7 @@ export function ChatScreen({ state, peer }: { state: ClientState; peer: string }
                   onRetryDownload={(id) => client.retryDownload(id)}
                   onOpenViewOnce={openViewOnce}
                   highlighted={item.id === highlightId}
+                  uploadPercent={state.uploadProgress[item.id]}
                   pinned={pinnedIds.has(item.id)}
                 />
               </SwipeToReply>
@@ -630,7 +638,10 @@ export function ChatScreen({ state, peer }: { state: ClientState; peer: string }
               onSend={(id) => {
                 // Al mandarlo se cierra el panel y vuelve el teclado para seguir escribiendo
                 backToKeyboard();
-                client.sendStickerImage(peer, id).catch((e) => Alert.alert('No se pudo mandar el sticker', String((e as Error)?.message ?? e)));
+                // Si estabas respondiendo un mensaje (por ejemplo otro sticker), el sticker va como respuesta
+                const replyId = replyTo?.id ?? null;
+                setReplyTo(null);
+                client.sendStickerImage(peer, id, { replyTo: replyId }).catch((e) => Alert.alert('No se pudo mandar el sticker', String((e as Error)?.message ?? e)));
               }}
             />
           )}

@@ -159,6 +159,17 @@ const commands: Record<string, (...args: any[]) => Promise<unknown>> = {
     const fs = require('node:fs') as typeof import('node:fs');
     return fs.readFileSync(decodeURIComponent(uri.replace(/^file:\/\//, '')), 'utf8');
   },
+  async addSticker() {
+    const uri = makeTestFile(`sticker-${Date.now()}.png`, PNG);
+    await client.addStickerFromImage(uri, 1, 1);
+    const list = await client.listStickers();
+    return list[list.length - 1].id;
+  },
+  // Un archivo grande de mentira (para probar el limite de tamaño)
+  async sendBigVideo(peer: string, megabytes: number) {
+    const uri = makeTestFile(`grande-${Date.now()}.mp4`, Buffer.alloc(megabytes * 1024 * 1024, 1));
+    await client.sendMedia(peer, uri, 'video');
+  },
   async testPng() {
     return PNG.toString('base64');
   },
