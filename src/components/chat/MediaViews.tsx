@@ -3,7 +3,7 @@ import { useVideoPlayer, VideoView } from 'expo-video';
 import { useEffect, useMemo, useState } from 'react';
 import { AppState, Image, Pressable, Text, TouchableOpacity, View } from 'react-native';
 import { preparePlayback } from '../../lib/audioMode';
-import { decryptToCache, deleteFile, keepWhilePlaying } from '../../lib/media';
+import { decryptToCache, deleteFile, isInUse, keepWhilePlaying } from '../../lib/media';
 import { ChatMessage, MediaKind } from '../../lib/types';
 import { ChatStyles } from './useChatTheme';
 
@@ -42,18 +42,25 @@ type MediaProps = {
   onLongPress?: () => void;
 };
 
+// Mismo tamaño que lo que va a aparecer (foto/video 220x220, audio una linea): si cambiara al terminar de descifrar,
+// la lista se reacomodaba mientras haces scroll y parecia moverse sola
+function placeholderStyle(message: ChatMessage, styles: ChatStyles) {
+  if (message.kind === 'voice') return { width: 230, height: 46, alignItems: 'center' as const, justifyContent: 'center' as const };
+  return [styles.mediaPlaceholder, { height: styles.messageImage.height }];
+}
+
 function Placeholder({ message, styles, onRetryDownload, onLongPress, error }: MediaProps & { error: boolean }) {
   const textStyle = message.fromMe ? styles.mediaPlaceholderTextMine : styles.mediaPlaceholderText;
   if (message.downloadState === 'failed' || error) {
     return (
-      <TouchableOpacity style={styles.mediaPlaceholder} onPress={() => onRetryDownload(message.id)} onLongPress={onLongPress} delayLongPress={300} activeOpacity={0.7}>
+      <TouchableOpacity style={placeholderStyle(message, styles)} onPress={() => onRetryDownload(message.id)} onLongPress={onLongPress} delayLongPress={300} activeOpacity={0.7}>
         <Text style={textStyle}>⚠ No se pudo descargar{'\n'}Toca para reintentar</Text>
       </TouchableOpacity>
     );
   }
   return (
-    <View style={styles.mediaPlaceholder}>
-      <Text style={textStyle}>{message.downloadState === 'pending' ? 'Descargando y descifrando…' : 'Descifrando…'}</Text>
+    <View style={placeholderStyle(message, styles)}>
+      <Text style={textStyle}>{message.downloadState === 'pending' ? 'Descargando…' : 'Descifrando…'}</Text>
     </View>
   );
 }
@@ -106,13 +113,55 @@ export function EncryptedSticker(props: MediaProps & { size?: number }) {
 function VideoPlayerView({ uri, style }: { uri: string; style: any }) {
   const player = useVideoPlayer(uri, (p) => {
     p.loop = false;
+    p.play();
   });
   return <VideoView player={player} style={style} nativeControls contentFit="cover" />;
 }
 
+// Archivo descifrado solo cuando lo pides (al tocar). Crear un reproductor y descifrar por cada video o audio que
+// aparecia en pantalla trababa el scroll; ahora mientras subes solo se dibuja un recuadro.
+function useDecryptOnDemand(message: ChatMessage, epoch: number) {
+  const [uri, setUri] = useState<string | null>(null);
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState(false);
+  // Al salir de la app se borra lo descifrado (salvo un audio que siga sonando): hay que volver a pedirlo
+  useEffect(() => {
+    setUri((prev) => (prev && isInUse(prev) ? prev : null));
+  }, [epoch]);
+  const kind = (message.kind === 'sticker' ? 'image' : message.kind) as MediaKind;
+  const open = async () => {
+    if (!message.mediaFile || !message.media || busy) return;
+    setBusy(true);
+    setError(false);
+    try {
+      setUri(await decryptToCache(message.id, kind, message.mediaFile, message.media));
+    } catch {
+      setError(true);
+    } finally {
+      setBusy(false);
+    }
+  };
+  return { uri, busy, error, open };
+}
+
 export function EncryptedVideo(props: MediaProps) {
-  const { uri, error } = useDecryptedUri(props.message, props.epoch);
-  if (!uri) return <Placeholder {...props} error={error} />;
+  const { uri, busy, error, open } = useDecryptOnDemand(props.message, props.epoch);
+  if (props.message.downloadState !== 'done' || !props.message.mediaFile || error) return <Placeholder {...props} error={error} />;
+  if (!uri) {
+    const textColor = props.message.fromMe ? props.styles.mediaPlaceholderTextMine.color : props.styles.mediaPlaceholderText.color;
+    return (
+      <TouchableOpacity
+        style={[props.styles.messageImage, { alignItems: 'center', justifyContent: 'center', backgroundColor: 'rgba(0,0,0,0.35)' }]}
+        onPress={open}
+        onLongPress={props.onLongPress}
+        delayLongPress={300}
+        activeOpacity={0.8}
+      >
+        <Text style={{ fontSize: 44, color: '#fff' }}>{busy ? '…' : '▶'}</Text>
+        <Text style={{ color: textColor, fontSize: 12, fontWeight: '700', marginTop: 6 }}>🎬 Video</Text>
+      </TouchableOpacity>
+    );
+  }
   return <VideoPlayerView key={uri} uri={uri} style={props.styles.messageImage} />;
 }
 
@@ -138,7 +187,7 @@ function formatSeconds(total: number) {
   return Math.floor(s / 60) + ':' + (s % 60).toString().padStart(2, '0');
 }
 
-function VoicePlayerView({ uri, seed, duration, textColor, onLongPress }: { uri: string; seed: string; duration: number | null; textColor: string; onLongPress?: () => void }) {
+function VoicePlayerView({ uri, seed, duration, textColor, onLongPress, autoPlay }: { uri: string; seed: string; duration: number | null; textColor: string; onLongPress?: () => void; autoPlay?: boolean }) {
   // Actualizacion frecuente para que la linea avance suave
   const player = useAudioPlayer(uri, { updateInterval: 100 });
   const status = useAudioPlayerStatus(player);
@@ -162,6 +211,13 @@ function VoicePlayerView({ uri, seed, duration, textColor, onLongPress }: { uri:
   }, [inProgress, uri, player]);
 
   useEffect(() => () => keepWhilePlaying(uri, false), [uri]);
+
+  // Se crea al tocar ▶: empieza a sonar de una vez
+  useEffect(() => {
+    if (!autoPlay) return;
+    preparePlayback().then(() => player.play());
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
   const [width, setWidth] = useState(0);
 
   const total = status.duration > 0 ? status.duration : duration || 0;
@@ -218,8 +274,27 @@ function VoicePlayerView({ uri, seed, duration, textColor, onLongPress }: { uri:
   );
 }
 
+// Nota de voz sin reproductor: solo el dibujo (mientras no la toques no se descifra ni se crea nada)
+function VoiceIdle({ seed, duration, textColor, busy, onPress, onLongPress }: { seed: string; duration: number | null; textColor: string; busy: boolean; onPress: () => void; onLongPress?: () => void }) {
+  const bars = useMemo(() => waveform(seed), [seed]);
+  return (
+    <TouchableOpacity onPress={onPress} onLongPress={onLongPress} delayLongPress={300} activeOpacity={0.7} style={{ flexDirection: 'row', alignItems: 'center', width: 230 }}>
+      <Text style={{ fontSize: 22, marginRight: 8 }}>{busy ? '⏳' : '▶️'}</Text>
+      <View style={{ flex: 1 }}>
+        <View style={{ height: 28, flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between' }}>
+          {bars.map((h, i) => (
+            <View key={i} style={{ width: 3, height: h, borderRadius: 2, backgroundColor: textColor, opacity: 0.35 }} />
+          ))}
+        </View>
+        <Text style={{ color: textColor, fontSize: 12, fontWeight: '700', opacity: 0.8, marginTop: 2 }}>{formatSeconds(duration || 0)}</Text>
+      </View>
+    </TouchableOpacity>
+  );
+}
+
 export function EncryptedVoice(props: MediaProps & { textColor: string }) {
-  const { uri, error } = useDecryptedUri(props.message, props.epoch, true);
-  if (!uri) return <Placeholder {...props} error={error} />;
-  return <VoicePlayerView key={uri} uri={uri} seed={props.message.id} duration={props.message.duration} textColor={props.textColor} onLongPress={props.onLongPress} />;
+  const { uri, busy, error, open } = useDecryptOnDemand(props.message, props.epoch);
+  if (props.message.downloadState !== 'done' || !props.message.mediaFile || error) return <Placeholder {...props} error={error} />;
+  if (!uri) return <VoiceIdle seed={props.message.id} duration={props.message.duration} textColor={props.textColor} busy={busy} onPress={open} onLongPress={props.onLongPress} />;
+  return <VoicePlayerView key={uri} uri={uri} seed={props.message.id} duration={props.message.duration} textColor={props.textColor} onLongPress={props.onLongPress} autoPlay />;
 }

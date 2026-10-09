@@ -1,7 +1,7 @@
 import { AudioModule, RecordingPresets, useAudioRecorder } from 'expo-audio';
 import * as ImagePicker from 'expo-image-picker';
 import { StatusBar } from 'expo-status-bar';
-import { useEffect, useMemo, useRef, useState } from 'react';
+import { memo, useEffect, useMemo, useRef, useState } from 'react';
 import { Alert, BackHandler, FlatList, Keyboard, KeyboardAvoidingView, Platform, Text, TextInput, TouchableOpacity, View } from 'react-native';
 import ImageViewing from 'react-native-image-viewing';
 import { SafeAreaView } from 'react-native-safe-area-context';
@@ -9,7 +9,8 @@ import { Avatar } from '../components/chat/Avatar';
 import { describeMessage, MessageBubble } from '../components/chat/MessageBubble';
 import { QuoteThumb } from '../components/chat/MediaViews';
 import { MessageActions, OptionsModal } from '../components/chat/Modals';
-import { useChatTheme } from '../components/chat/useChatTheme';
+import { ChatStyles, useChatTheme } from '../components/chat/useChatTheme';
+import { Colors } from '../components/chat/theme';
 import { client, ClientState } from '../lib/client';
 import { enterRecordingMode, exitRecordingMode } from '../lib/audioMode';
 import { reencodeImage } from '../lib/imageSafety';
@@ -23,6 +24,94 @@ import { SwipeToReply } from '../components/chat/SwipeToReply';
 import { ChatMessage, formatTtl, shortTtl, TIMER_OPTIONS } from '../lib/types';
 import { ContactInfoScreen } from './ContactInfoScreen';
 
+
+type RowHandlers = {
+  reply: (m: ChatMessage) => void;
+  swipeDelete: (m: ChatMessage) => void;
+  quotePress: (id: string) => void;
+  longPress: (m: ChatMessage) => void;
+  zoom: (uri: string, messageId: string) => void;
+  openViewOnce: (m: ChatMessage) => void;
+};
+
+type RowProps = {
+  item: ChatMessage;
+  quoted: ChatMessage | null;
+  me: string;
+  peer: string;
+  epoch: number;
+  styles: ChatStyles;
+  colors: Colors;
+  highlighted: boolean;
+  uploadPercent: number | undefined;
+  pinned: boolean;
+  handlers: RowHandlers;
+};
+
+// Cada recarga de la base crea objetos nuevos con el mismo contenido: se comparan por valor
+function sameMessage(a: ChatMessage | null, b: ChatMessage | null): boolean {
+  if (a === b) return true;
+  if (!a || !b) return false;
+  for (const key of Object.keys(a) as (keyof ChatMessage)[]) {
+    if (key === 'media') {
+      if (a.media?.path !== b.media?.path || a.media?.key !== b.media?.key) return false;
+    } else if (key === 'reactions') {
+      if (JSON.stringify(a.reactions) !== JSON.stringify(b.reactions)) return false;
+    } else if (a[key] !== b[key]) {
+      return false;
+    }
+  }
+  return true;
+}
+
+// Una fila del chat. Solo se vuelve a dibujar si cambia SU mensaje: antes cualquier cambio (alguien escribiendo,
+// en linea, un porcentaje de subida) redibujaba todo el chat y el scroll se trababa.
+const ChatRow = memo(
+  function ChatRow({ item, quoted, me, peer, epoch, styles, colors, highlighted, uploadPercent, pinned, handlers }: RowProps) {
+    return (
+      <SwipeToReply
+        enabled={item.kind !== 'system' && !item.deleted}
+        iconColor={colors.accent}
+        deleteColor={colors.danger}
+        onReply={() => handlers.reply(item)}
+        onDelete={() => handlers.swipeDelete(item)}
+      >
+        <MessageBubble
+          message={item}
+          quoted={quoted}
+          onQuotePress={handlers.quotePress}
+          me={me}
+          peer={peer}
+          epoch={epoch}
+          styles={styles}
+          onLongPress={handlers.longPress}
+          onZoom={handlers.zoom}
+          onRetrySend={retrySend}
+          onRetryDownload={retryDownload}
+          onOpenViewOnce={handlers.openViewOnce}
+          highlighted={highlighted}
+          uploadPercent={uploadPercent}
+          pinned={pinned}
+        />
+      </SwipeToReply>
+    );
+  },
+  (a, b) =>
+    sameMessage(a.item, b.item) &&
+    sameMessage(a.quoted, b.quoted) &&
+    a.me === b.me &&
+    a.peer === b.peer &&
+    a.epoch === b.epoch &&
+    a.styles === b.styles &&
+    a.colors === b.colors &&
+    a.highlighted === b.highlighted &&
+    a.uploadPercent === b.uploadPercent &&
+    a.pinned === b.pinned &&
+    a.handlers === b.handlers,
+);
+
+const retrySend = (id: string) => client.retrySend(id);
+const retryDownload = (id: string) => client.retryDownload(id);
 
 export function ChatScreen({ state, peer }: { state: ClientState; peer: string }) {
   const { isDark, colors, styles } = useChatTheme();
@@ -403,6 +492,21 @@ export function ChatScreen({ state, peer }: { state: ClientState; peer: string }
     );
   };
 
+  // Manejadores estables para las filas memorizadas: siempre llaman a la version mas reciente de cada funcion
+  const handlersRef = useRef({ startReply, confirmSwipeDelete, goToQuoted, setActionTarget, openGallery, openViewOnce });
+  handlersRef.current = { startReply, confirmSwipeDelete, goToQuoted, setActionTarget, openGallery, openViewOnce };
+  const rowHandlers = useMemo<RowHandlers>(
+    () => ({
+      reply: (m) => handlersRef.current.startReply(m),
+      swipeDelete: (m) => handlersRef.current.confirmSwipeDelete(m),
+      quotePress: (id) => handlersRef.current.goToQuoted(id),
+      longPress: (m) => handlersRef.current.setActionTarget(m),
+      zoom: (uri, id) => handlersRef.current.openGallery(uri, id),
+      openViewOnce: (m) => handlersRef.current.openViewOnce(m),
+    }),
+    [],
+  );
+
   if (showInfo) return <ContactInfoScreen state={state} peer={peer} onClose={() => setShowInfo(false)} />;
 
   return (
@@ -516,32 +620,24 @@ export function ChatScreen({ state, peer }: { state: ClientState; peer: string }
             keyExtractor={(item) => item.id}
             contentContainerStyle={styles.messageList}
             keyboardShouldPersistTaps="handled"
+            initialNumToRender={15}
+            maxToRenderPerBatch={8}
+            updateCellsBatchingPeriod={40}
+            windowSize={9}
             renderItem={({ item }) => (
-              <SwipeToReply
-                enabled={item.kind !== 'system' && !item.deleted}
-                iconColor={colors.accent}
-                deleteColor={colors.danger}
-                onReply={() => startReply(item)}
-                onDelete={() => confirmSwipeDelete(item)}
-              >
-                <MessageBubble
-                  message={item}
-                  quoted={quotedOf(item.replyTo)}
-                  onQuotePress={goToQuoted}
-                  me={state.username}
-                  peer={peer}
-                  epoch={state.cacheEpoch}
-                  styles={styles}
-                  onLongPress={setActionTarget}
-                  onZoom={openGallery}
-                  onRetrySend={(id) => client.retrySend(id)}
-                  onRetryDownload={(id) => client.retryDownload(id)}
-                  onOpenViewOnce={openViewOnce}
-                  highlighted={item.id === highlightId}
-                  uploadPercent={state.uploadProgress[item.id]}
-                  pinned={pinnedIds.has(item.id)}
-                />
-              </SwipeToReply>
+              <ChatRow
+                item={item}
+                quoted={quotedOf(item.replyTo)}
+                me={state.username}
+                peer={peer}
+                epoch={state.cacheEpoch}
+                styles={styles}
+                colors={colors}
+                highlighted={item.id === highlightId}
+                uploadPercent={state.uploadProgress[item.id]}
+                pinned={pinnedIds.has(item.id)}
+                handlers={rowHandlers}
+              />
             )}
           />
           </ChatWallpaper>
