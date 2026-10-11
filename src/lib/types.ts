@@ -1,7 +1,7 @@
 import { PublicIdentity } from './crypto/x3dh';
 
-export type MessageKind = 'text' | 'image' | 'sticker' | 'video' | 'voice' | 'system';
-export type MediaKind = 'image' | 'video' | 'voice';
+export type MessageKind = 'text' | 'image' | 'sticker' | 'video' | 'voice' | 'file' | 'system';
+export type MediaKind = 'image' | 'video' | 'voice' | 'file';
 export type MessageStatus = 'pending' | 'sent' | 'read' | 'failed';
 export type DownloadState = 'none' | 'pending' | 'done' | 'failed';
 
@@ -14,6 +14,10 @@ export type MediaRef = {
   url?: string;
   pad?: 1; // el contenido cifrado lleva relleno para ocultar el tamaño real (ver media.ts)
   size?: number; // bytes del archivo cifrado (ya con relleno), para calcular el tiempo de descarga
+  // Documentos: nombre, tipo y tamaño original. Viajan dentro del mensaje cifrado; el servidor no los ve.
+  name?: string;
+  mime?: string;
+  bytes?: number;
 };
 
 export type ChatMessage = {

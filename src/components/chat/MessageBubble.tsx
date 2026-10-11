@@ -1,5 +1,6 @@
 import { Text, TouchableOpacity, View } from 'react-native';
 import { ChatMessage } from '../../lib/types';
+import { DocumentCard } from './DocumentCard';
 import { LinkableText } from './LinkableText';
 import { EncryptedImage, EncryptedSticker, EncryptedVideo, EncryptedVoice, QuoteThumb } from './MediaViews';
 import { ChatStyles } from './useChatTheme';
@@ -18,6 +19,8 @@ export function describeMessage(m: ChatMessage | null): string {
       return '📷 Foto';
     case 'video':
       return '🎬 Video';
+    case 'file':
+      return '📄 ' + (m.body || 'Documento');
     case 'voice':
       return m.duration ? `🎤 Nota de voz (${Math.floor(m.duration / 60)}:${String(m.duration % 60).padStart(2, '0')})` : '🎤 Nota de voz';
     default:
@@ -87,6 +90,8 @@ export function MessageBubble({ message: item, quoted, me, peer, epoch, styles, 
     content = <EncryptedImage {...mediaProps} onZoom={onZoom} />;
   } else if (item.kind === 'video') {
     content = <EncryptedVideo {...mediaProps} />;
+  } else if (item.kind === 'file') {
+    content = <DocumentCard message={item} styles={styles} textColor={mine ? styles.myText.color : styles.theirText.color} onLongPress={() => onLongPress(item)} onRetryDownload={onRetryDownload} />;
   } else if (item.kind === 'voice') {
     content = <EncryptedVoice {...mediaProps} textColor={mine ? styles.myText.color : styles.theirText.color} />;
   } else {

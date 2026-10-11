@@ -3,6 +3,7 @@ import { useEffect, useState } from 'react';
 import { Alert, ScrollView, Text, TouchableOpacity, View } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { Avatar } from '../components/chat/Avatar';
+import { DocumentsSection } from '../components/chat/DocumentsSection';
 import { useChatTheme } from '../components/chat/useChatTheme';
 import { WallpaperPicker } from '../components/chat/WallpaperPicker';
 import { setWallpaper, useAppearance } from '../lib/appearance';
@@ -81,6 +82,19 @@ export function ContactInfoScreen({ state, peer, onClose }: { state: ClientState
               <Text style={styles.headerSubtitle}>SIN VERIFICAR</Text>
             )}
           </View>
+
+          <DocumentsSection
+            peer={peer}
+            me={state.username}
+            reloadKey={state.messages}
+            styles={styles}
+            colors={colors}
+            onGoToMessage={(id) => {
+              onClose();
+              // Ya en el chat, salta al mensaje y lo resalta
+              setTimeout(() => client.jumpToMessage(id), 150);
+            }}
+          />
 
           <Text style={styles.infoSectionTitle}>NÚMERO DE SEGURIDAD</Text>
           <View style={styles.safetyGrid}>

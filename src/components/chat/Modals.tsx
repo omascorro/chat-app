@@ -1,4 +1,5 @@
 import { useEffect, useState } from 'react';
+import { copyText } from '../../lib/clipboard';
 import { Modal, Pressable, Text, TextInput, TouchableOpacity, View } from 'react-native';
 import { ChatMessage } from '../../lib/types';
 import { Colors } from './theme';
@@ -57,6 +58,7 @@ export function MessageActions({ message, me, styles, onClose, onReply, onEdit, 
             </View>
           )}
           {canInteract && option('↩  Responder', () => onReply(message))}
+          {canInteract && message.kind === 'text' && !!message.body && option('📋  Copiar', () => copyText(message.body))}
           {canInteract && option(pinned ? '📌  Desfijar' : '📌  Fijar', () => onTogglePin(message))}
           {canInteract && message.fromMe && message.kind === 'text' && option('✎  Editar', () => onEdit(message))}
           {canInteract && !message.fromMe && message.kind === 'sticker' && message.mediaFile && option('🏷  Guardar en mis stickers', () => onSaveSticker(message))}
@@ -70,8 +72,9 @@ export function MessageActions({ message, me, styles, onClose, onReply, onEdit, 
 
 type Option = { label: string; selected?: boolean; onPress: () => void };
 
-export function OptionsModal({ visible, title, message, options, styles, onClose }: {
+export function OptionsModal({ visible, title, message, options, styles, onClose, plain }: {
   visible: boolean;
+  plain?: boolean; // sin los circulos de seleccion (para menus de acciones)
   title: string;
   message?: string;
   options: Option[];
@@ -93,7 +96,7 @@ export function OptionsModal({ visible, title, message, options, styles, onClose
                 o.onPress();
               }}
             >
-              <Text style={styles.modalOptionText}>{o.selected ? '●  ' : '○  '}{o.label}</Text>
+              <Text style={styles.modalOptionText}>{plain ? '' : o.selected ? '●  ' : '○  '}{o.label}</Text>
             </TouchableOpacity>
           ))}
         </Pressable>

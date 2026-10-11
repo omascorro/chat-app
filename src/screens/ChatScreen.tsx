@@ -1,4 +1,5 @@
 import { AudioModule, RecordingPresets, useAudioRecorder } from 'expo-audio';
+import * as DocumentPicker from 'expo-document-picker';
 import * as ImagePicker from 'expo-image-picker';
 import { StatusBar } from 'expo-status-bar';
 import { memo, useEffect, useMemo, useRef, useState } from 'react';
@@ -121,6 +122,7 @@ export function ChatScreen({ state, peer }: { state: ClientState; peer: string }
 
   const [inputText, setInputText] = useState('');
   const [showStickers, setShowStickers] = useState(false);
+  const [attachMenu, setAttachMenu] = useState(false);
   const inputRef = useRef<TextInput>(null);
 
   // Regresar del panel de stickers al teclado (como WhatsApp)
@@ -353,11 +355,22 @@ export function ChatScreen({ state, peer }: { state: ClientState; peer: string }
     });
 
   const chooseMediaSource = () => {
-    Alert.alert('Enviar foto o video', undefined, [
-      { text: 'Cámara', onPress: () => pickMedia('camera') },
-      { text: 'Galería', onPress: () => pickMedia('library') },
-      { text: 'Cancelar', style: 'cancel' },
-    ]);
+    // Menu propio: el aviso del sistema en Android solo muestra 3 botones
+    setAttachMenu(true);
+  };
+
+  // Documentos (PDF, Word, Excel…): se cifran y se mandan igual que las fotos
+  const pickDocument = async () => {
+    const result = await DocumentPicker.getDocumentAsync({ copyToCacheDirectory: true, multiple: false });
+    const asset = result.canceled ? null : result.assets?.[0];
+    if (!asset?.uri) return;
+    try {
+      await client.sendFile(peer, asset.uri, { name: asset.name, mime: asset.mimeType }, { replyTo: replyTo?.id ?? null });
+      setReplyTo(null);
+    } catch (e) {
+      deleteIfAppFile(asset.uri);
+      Alert.alert('No se pudo enviar el documento', String((e as Error)?.message ?? e));
+    }
   };
 
   const pickMedia = async (source: 'camera' | 'library') => {
@@ -836,6 +849,19 @@ export function ChatScreen({ state, peer }: { state: ClientState; peer: string }
         visible={!!viewOnceOpen}
         onRequestClose={closeViewOnce}
         swipeToCloseEnabled={false}
+      />
+      <OptionsModal
+        visible={attachMenu}
+        plain
+        title="ENVIAR"
+        styles={styles}
+        onClose={() => setAttachMenu(false)}
+        options={[
+          // Se abre un momento despues de cerrar este menu: el iPhone no deja abrir otra ventana mientras se cierra una
+          { label: '📷  Cámara', onPress: () => setTimeout(() => pickMedia('camera'), 400) },
+          { label: '🖼  Foto o video de la galería', onPress: () => setTimeout(() => pickMedia('library'), 400) },
+          { label: '📄  Documento', onPress: () => setTimeout(pickDocument, 400) },
+        ]}
       />
       <OptionsModal
         visible={timerMenu}

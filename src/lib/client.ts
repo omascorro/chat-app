@@ -23,6 +23,22 @@ import { resetAppearance } from './appearance';
 import { ensureMessagesChannel, registerBackgroundNotifications } from './backgroundNotifications';
 import { encryptPreview, getOrCreateDeviceKey, keyFingerprint, previewText, resetDeviceKey } from './preview';
 
+// Lo que llega del otro telefono se revisa: el nombre se limpia y solo se aceptan campos conocidos
+function cleanMediaRef(m: MediaRef): MediaRef {
+  return {
+    bucket: m.bucket,
+    key: m.key,
+    nonce: m.nonce,
+    ...(typeof m.path === 'string' ? { path: m.path } : {}),
+    ...(typeof m.url === 'string' ? { url: m.url } : {}),
+    ...(m.pad ? { pad: 1 as const } : {}),
+    ...(typeof m.size === 'number' ? { size: m.size } : {}),
+    ...(typeof m.name === 'string' ? { name: safeFileName(m.name) } : {}),
+    ...(typeof m.mime === 'string' && /^[\w.+-]+\/[\w.+-]+$/.test(m.mime) ? { mime: m.mime.slice(0, 100) } : {}),
+    ...(typeof m.bytes === 'number' && m.bytes >= 0 ? { bytes: Math.round(m.bytes) } : {}),
+  };
+}
+
 function fromB64Safe(value: string): Uint8Array | null {
   try {
     return value ? fromB64(value) : null;
@@ -38,6 +54,7 @@ import {
   importPlainFile,
   fileSize,
   MAX_MEDIA_BYTES,
+  safeFileName,
   MediaAuth,
   readFileBase64,
   removeFromCache,
@@ -51,7 +68,7 @@ import {
 import { prepareStickerImage, stickerIdFor } from './stickers';
 import { decryptPicture, isEncryptedPicture, newProfileKey } from './profilePhoto';
 import { migrateLegacyData } from './migrate';
-import { ChatMessage, Contact, formatTtl, MediaKind, Payload } from './types';
+import { ChatMessage, Contact, formatTtl, MediaKind, MediaRef, Payload } from './types';
 
 const PROTOCOL_VERSION = 2;
 export const SELF_DESTRUCT_MS = 10_000;
@@ -957,7 +974,7 @@ export class ChatClient {
     if (!store) return [];
     const q = query.trim().toLowerCase();
     const all = await store.getMessages(peer, 5000);
-    return all.filter((m) => !m.deleted && (m.kind === 'text' || m.kind === 'sticker') && m.body.toLowerCase().includes(q));
+    return all.filter((m) => !m.deleted && (m.kind === 'text' || m.kind === 'sticker' || m.kind === 'file') && m.body.toLowerCase().includes(q));
   }
 
   // ---------- recepcion ----------
@@ -1015,7 +1032,8 @@ export class ChatClient {
 
   private async applyPayload(store: Store, from: string, p: Payload) {
     if (p.t === 'msg') {
-      if (typeof p.id !== 'string' || p.id.length > 64 || !['text', 'image', 'sticker', 'video', 'voice'].includes(p.kind)) return;
+      if (typeof p.id !== 'string' || p.id.length > 64 || !['text', 'image', 'sticker', 'video', 'voice', 'file'].includes(p.kind)) return;
+      if (p.kind === 'file' && !p.media) return;
       const now = Date.now();
       const sentAt = typeof p.sentAt === 'number' && p.sentAt < now + 5 * 60_000 ? p.sentAt : now;
       // Versiones anteriores solo mandaban selfDestruct (10 segundos)
@@ -1025,8 +1043,8 @@ export class ChatClient {
         peer: from,
         fromMe: false,
         kind: p.kind,
-        body: typeof p.body === 'string' ? p.body.slice(0, MAX_TEXT_LENGTH) : '',
-        media: p.media ?? null,
+        body: p.kind === 'file' ? safeFileName(p.media?.name) : typeof p.body === 'string' ? p.body.slice(0, MAX_TEXT_LENGTH) : '',
+        media: p.media ? cleanMediaRef(p.media) : null,
         mediaFile: null,
         downloadState: p.media ? 'pending' : 'none',
         duration: typeof p.duration === 'number' ? p.duration : null,
@@ -1375,7 +1393,15 @@ export class ChatClient {
       id: m.id,
       kind: m.kind as Exclude<ChatMessage['kind'], 'system'>,
       body: m.body || undefined,
-      media: m.media ? { bucket: m.media.bucket, key: m.media.key, nonce: m.media.nonce, ...(m.media.pad ? { pad: 1 as const } : {}) } : undefined,
+      media: m.media
+        ? {
+            bucket: m.media.bucket,
+            key: m.media.key,
+            nonce: m.media.nonce,
+            ...(m.media.pad ? { pad: 1 as const } : {}),
+            ...(m.kind === 'file' ? { name: m.media.name, mime: m.media.mime, bytes: m.media.bytes } : {}),
+          }
+        : undefined,
       duration: m.duration ?? undefined,
       sentAt: m.sentAt,
       selfDestruct: m.selfDestruct || undefined,
@@ -1471,6 +1497,24 @@ export class ChatClient {
     const tempUri = await writeStickerToCache(`send_${message.id}`, row.data);
     const { media, mediaFile } = await importPlainFile(message.id, tempUri, 'image', true);
     await this.queueOutgoing({ ...message, media, mediaFile, downloadState: 'done' });
+  }
+
+  // Documentos (PDF, Word, etc.): se cifran igual que las fotos; nombre y tipo van dentro del mensaje cifrado
+  async sendFile(peer: string, plainUri: string, file: { name: string; mime?: string | null }, options: { replyTo?: string | null } = {}) {
+    const bytes = await fileSize(plainUri);
+    if (bytes > MAX_MEDIA_BYTES) {
+      throw new Error(`El documento pesa ${Math.round(bytes / 1048576)} MB y el máximo es ${Math.round(MAX_MEDIA_BYTES / 1048576)} MB.`);
+    }
+    const name = safeFileName(file.name);
+    const message = this.newOutgoing(peer, 'file', name, { replyTo: options.replyTo ?? null });
+    const { media, mediaFile } = await importPlainFile(message.id, plainUri, 'file', true);
+    const ref = { ...media, name, ...(file.mime ? { mime: file.mime.slice(0, 100) } : {}), bytes };
+    await this.queueOutgoing({ ...message, media: ref, mediaFile, downloadState: 'done' });
+  }
+
+  // Seccion "Documentos" de un contacto
+  async listFiles(peer: string): Promise<ChatMessage[]> {
+    return this.store ? this.store.getFileMessages(peer) : [];
   }
 
   async sendMedia(peer: string, plainUri: string, kind: MediaKind, options: { duration?: number; replyTo?: string | null; viewOnce?: boolean } = {}) {

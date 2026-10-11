@@ -182,6 +182,21 @@ const commands: Record<string, (...args: any[]) => Promise<unknown>> = {
     await media.wipeCache();
     return { ...result, afterStop: await media.fileExists(playing) };
   },
+  async sendDocument(peer: string, name: string, text: string) {
+    const uri = makeTestFile(`doc-${Date.now()}.tmp`, Buffer.from(text, 'utf8'));
+    await client.sendFile(peer, uri, { name, mime: 'application/pdf' });
+  },
+  // Descifra un documento recibido y devuelve su contenido y el nombre del archivo en disco
+  async decryptDocument(peer: string, id: string) {
+    const { decryptToCache } = require('../../src/lib/media') as typeof import('../../src/lib/media');
+    await client.openConversation(peer);
+    const m = client.getSnapshot().messages.find((x) => x.id === id);
+    if (!m?.mediaFile || !m.media) throw new Error('sin archivo');
+    const fs = require('node:fs') as typeof import('node:fs');
+    const uri = await decryptToCache(m.id, 'file', m.mediaFile, m.media);
+    const path = decodeURIComponent(uri.replace(/^file:\/\//, ''));
+    return { text: fs.readFileSync(path, 'utf8'), file: path.split(/[\\/]/).pop(), media: m.media };
+  },
   async testPng() {
     return PNG.toString('base64');
   },

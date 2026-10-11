@@ -396,6 +396,30 @@ test('nota de voz en segundo plano: al salir de la app no se borra la que esta s
   await Promise.all([a.close(), b.close()]);
 });
 
+test('documentos: se mandan cifrados con su nombre, se abren identicos y aparecen en la seccion Documentos', async () => {
+  const [a, b, na, nb] = await pair();
+  const secret = 'Contrato confidencial: numero de cuenta 123-456';
+  await a.run('sendDocument', nb, '../../contrato final.pdf', secret);
+  const got = await waitFor('beto recibe el documento', () => msgs(b, na), (l) => l.some((m) => m.kind === 'file' && m.hasFile));
+  const doc = got.find((m) => m.kind === 'file')!;
+  assert.ok(!doc.body.includes('/') && doc.body.endsWith('contrato final.pdf'), `el nombre llega limpio: ${doc.body}`);
+  const opened = await b.run<any>('decryptDocument', na, doc.id);
+  assert.equal(opened.text, secret, 'se abre identico');
+  assert.ok(opened.file.endsWith('.pdf'), 'se guarda con su extension para abrirlo con otra app');
+  assert.equal(opened.media.mime, 'application/pdf');
+  assert.equal(opened.media.bytes, Buffer.byteLength(secret), 'trae el tamaño original');
+  // El servidor no ve ni el contenido ni el nombre
+  for (const stored of storage.values()) {
+    assert.ok(!stored.toString('latin1').includes('Contrato') && !stored.toString('latin1').includes('contrato'), 'el servidor no lo puede leer');
+  }
+  const filesB = await b.run<any[]>('call', 'listFiles', na);
+  const filesA = await a.run<any[]>('call', 'listFiles', nb);
+  assert.deepEqual([filesB.length, filesA.length], [1, 1], 'aparece en Documentos en los dos telefonos');
+  const found = await b.run<any[]>('call', 'searchAll', 'contrato');
+  assert.ok(found.some((m) => m.id === doc.id), 'la busqueda encuentra el documento por su nombre');
+  await Promise.all([a.close(), b.close()]);
+});
+
 test('vaciar chat: solo en mi telefono, o para los dos (con fotos y fijados)', async () => {
   const [a, b, na, nb] = await pair();
   await a.run('sendText', nb, 'mensaje 1');

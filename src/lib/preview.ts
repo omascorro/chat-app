@@ -119,6 +119,8 @@ export function previewText(p: { kind: string; body?: string; ttl?: number; self
       return '🎬 Video';
     case 'voice':
       return '🎤 Nota de voz';
+    case 'file':
+      return '📄 Documento';
     case 'sticker':
       return p.media ? '🏷 Sticker' : (p.body ?? '').slice(0, MAX_PREVIEW_CHARS);
     default: {

@@ -189,7 +189,7 @@ export class Store {
     const needle = normalizeForSearch(query);
     if (!needle) return [];
     const candidates = await this.db.getAllAsync<{ id: string; body: string }>(
-      "SELECT id, body FROM messages WHERE kind = 'text' AND deleted = 0 ORDER BY sent_at DESC",
+      "SELECT id, body FROM messages WHERE kind IN ('text', 'file') AND deleted = 0 ORDER BY sent_at DESC",
     );
     const ids = candidates.filter((c) => normalizeForSearch(c.body).includes(needle)).slice(0, limit).map((c) => c.id);
     if (ids.length === 0) return [];
@@ -227,6 +227,15 @@ export class Store {
       .map((r) => r.id);
     for (const id of ids) await this.db.runAsync('DELETE FROM outbox WHERE id = ?', id);
     return ids;
+  }
+
+  // Seccion "Documentos" del contacto: los mas nuevos primero
+  async getFileMessages(peer: string): Promise<ChatMessage[]> {
+    const rows = await this.db.getAllAsync<MessageRow>(
+      "SELECT * FROM messages WHERE peer = ? AND kind = 'file' AND deleted = 0 ORDER BY sent_at DESC",
+      peer,
+    );
+    return rows.map(rowToMessage);
   }
 
   async getAllMessages(): Promise<ChatMessage[]> {

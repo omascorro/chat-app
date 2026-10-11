@@ -20,7 +20,7 @@ function mediaUrl(media: MediaRef, path: string): string {
 const MEDIA_DIR = `${FileSystem.documentDirectory}media/`;
 const CACHE_DIR = `${FileSystem.cacheDirectory}mc/`;
 
-const EXTENSIONS: Record<MediaKind, string> = { image: 'jpg', video: 'mp4', voice: 'm4a' };
+const EXTENSIONS: Record<MediaKind, string> = { image: 'jpg', video: 'mp4', voice: 'm4a', file: 'bin' };
 // Las pruebas automaticas los acortan
 export const MEDIA_TIMEOUTS = { upload: 90_000, download: 120_000, minBytesPerSecond: 48 * 1024 };
 // El servidor acepta hasta 50 MB; con el relleno y el cifrado, 45 MB de archivo original caben con margen
@@ -150,7 +150,17 @@ export async function uploadMedia(
   if (!result) throw new Error('La subida se canceló');
   if (result.status !== 200) throw new Error(`El servidor rechazó el archivo (HTTP ${result.status}${result.body ? ': ' + result.body.slice(0, 80) : ''})`);
   // size: para que el que recibe sepa cuanto tiempo darle a la descarga
-  return { bucket: media.bucket, key: media.key, nonce: media.nonce, ...(media.pad ? { pad: 1 as const } : {}), path, ...(size ? { size } : {}) };
+  return {
+    bucket: media.bucket,
+    key: media.key,
+    nonce: media.nonce,
+    ...(media.pad ? { pad: 1 as const } : {}),
+    path,
+    ...(size ? { size } : {}),
+    ...(media.name ? { name: media.name } : {}),
+    ...(media.mime ? { mime: media.mime } : {}),
+    ...(media.bytes !== undefined ? { bytes: media.bytes } : {}),
+  };
 }
 
 // Descarga el archivo cifrado, comprueba que descifra bien y lo guarda tal cual (cifrado)
@@ -180,7 +190,8 @@ const decrypting = new Map<string, Promise<string>>();
 
 // Descifra a la carpeta temporal para que el reproductor/visor pueda abrirlo
 export function decryptToCache(messageId: string, kind: MediaKind, mediaFile: string, media: MediaRef): Promise<string> {
-  const cacheUri = `${CACHE_DIR}${messageId}.${EXTENSIONS[kind]}`;
+  // Los documentos conservan su nombre, asi la app que los abre sabe que son (PDF, Word…)
+  const cacheUri = kind === 'file' ? `${CACHE_DIR}f_${messageId}/${safeFileName(media.name)}` : `${CACHE_DIR}${messageId}.${EXTENSIONS[kind]}`;
   const inFlight = decrypting.get(cacheUri);
   if (inFlight) return inFlight;
   const job = (async () => {
@@ -190,7 +201,7 @@ export function decryptToCache(messageId: string, kind: MediaKind, mediaFile: st
     if (!opened) throw new Error('No se pudo descifrar el archivo local');
     // Los archivos de antes del relleno no lo llevan
     const plain = media.pad ? unpad(opened) : opened;
-    await ensureDir(CACHE_DIR);
+    await ensureDir(kind === 'file' ? cacheUri.slice(0, cacheUri.lastIndexOf('/') + 1) : CACHE_DIR);
     await writeBytes(cacheUri, plain);
     return cacheUri;
   })().finally(() => decrypting.delete(cacheUri));
@@ -213,6 +224,13 @@ export async function readFileBase64(uri: string): Promise<string> {
 
 export async function removeFromCache(messageId: string) {
   for (const ext of Object.values(EXTENSIONS)) await deleteFile(`${CACHE_DIR}${messageId}.${ext}`);
+  await deleteFile(`${CACHE_DIR}f_${messageId}`);
+}
+
+// Nombre seguro para guardar en disco: sin carpetas ni caracteres raros, y con extension
+export function safeFileName(name: string | undefined): string {
+  const clean = (name ?? '').replace(/[\\/:*?"<>|\u0000-\u001f]/g, '_').replace(/^\.+/, '').trim().slice(0, 120);
+  return clean || 'documento';
 }
 
 // Notas de voz sonando ahora: su copia descifrada no se borra al salir de la app (si no, se cortaria el audio).
@@ -250,6 +268,7 @@ export async function wipePlaintextLeftovers() {
   if (FileSystem.cacheDirectory) {
     await deleteFile(`${FileSystem.cacheDirectory}ImagePicker`);
     await deleteFile(`${FileSystem.cacheDirectory}ImageManipulator`);
+    await deleteFile(`${FileSystem.cacheDirectory}DocumentPicker`);
   }
   // En Android el recorte de stickers deja el PNG en la carpeta principal de la app; nada nuestro vive ahi suelto
   const doc = FileSystem.documentDirectory;
