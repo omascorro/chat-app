@@ -1,5 +1,6 @@
 import { FlatList, Text, TouchableOpacity, View } from 'react-native';
 import { normalizeForSearch } from '../../lib/db';
+import { captionOf, fileNameOf } from '../../lib/documents';
 import { ChatMessage, Contact } from '../../lib/types';
 import { Avatar } from './Avatar';
 import { ChatStyles } from './useChatTheme';
@@ -54,7 +55,7 @@ export function SearchResults({ results, query, contacts, styles, onOpen }: {
               <Text style={styles.resultName} numberOfLines={1}>{item.fromMe ? `Tú → ${item.peer}` : item.peer}</Text>
               <Text style={styles.resultDate}>{formatDate(item.sentAt)}</Text>
             </View>
-            <Snippet body={item.body} query={query} styles={styles} />
+            <Snippet body={item.kind === 'file' ? [fileNameOf(item), captionOf(item)].filter(Boolean).join(' · ') : item.body}query={query} styles={styles} />
           </View>
         </TouchableOpacity>
       )}

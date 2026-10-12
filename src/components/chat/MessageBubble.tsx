@@ -17,16 +17,20 @@ export function describeMessage(m: ChatMessage | null): string {
   if (m.kind === 'sticker' && m.media) return '🏷 Sticker';
   switch (m.kind) {
     case 'image':
-      return m.body ? '📷 ' + m.body : '📷 Foto';
+      return m.body ? '📷 ' + shorten(m.body) : '📷 Foto';
     case 'video':
-      return m.body ? '🎬 ' + m.body : '🎬 Video';
+      return m.body ? '🎬 ' + shorten(m.body) : '🎬 Video';
     case 'file':
-      return '📄 ' + (captionOf(m) || fileNameOf(m));
+      return '📄 ' + shorten(captionOf(m) || fileNameOf(m));
     case 'voice':
       return m.duration ? `🎤 Nota de voz (${Math.floor(m.duration / 60)}:${String(m.duration % 60).padStart(2, '0')})` : '🎤 Nota de voz';
     default:
-      return m.body.length > 80 ? m.body.slice(0, 80) + '…' : m.body;
+      return shorten(m.body);
   }
+}
+
+function shorten(text: string): string {
+  return text.length > 80 ? text.slice(0, 80) + '…' : text;
 }
 
 type Props = {

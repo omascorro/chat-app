@@ -431,14 +431,17 @@ export function ChatScreen({ state, peer }: { state: ClientState; peer: string }
     setPending(null);
     const replyId = replyTo?.id ?? null;
     setReplyTo(null);
-    if (caption.trim() && caption === inputText) setInputText('');
+    const clearedDraft = !!caption.trim() && caption === inputText;
+    if (clearedDraft) setInputText('');
     const failures: string[] = [];
-    for (const [i, item] of items.entries()) {
-      const first = i === 0;
+    // El comentario y la respuesta van en el primero que SI se manda (si una foto falla, pasan a la siguiente)
+    let first = true;
+    for (const item of items) {
       let uri = item.uri;
       try {
         if (item.kind === 'file') {
           await client.sendFile(peer, item.uri, { name: item.name, mime: item.mime }, { replyTo: first ? replyId : null, caption: first ? caption : '' });
+          first = false;
           continue;
         }
         if (item.kind === 'image') {
@@ -452,6 +455,7 @@ export function ChatScreen({ state, peer }: { state: ClientState; peer: string }
           uri = clean;
         }
         await client.sendMedia(peer, uri, item.kind, { replyTo: first ? replyId : null, caption: first ? caption : '' });
+        first = false;
       } catch (e) {
         failures.push(String((e as Error)?.message ?? e));
       } finally {
@@ -459,6 +463,8 @@ export function ChatScreen({ state, peer }: { state: ClientState; peer: string }
         deleteIfAppFile(item.uri);
       }
     }
+    // No se mando nada: el texto que estaba escrito regresa a la caja
+    if (first && clearedDraft) setInputText((current) => current || caption);
     if (failures.length > 0) {
       Alert.alert(failures.length === items.length ? 'No se pudo enviar' : `${items.length - failures.length} de ${items.length} enviados`, failures.join('\n\n'));
     }

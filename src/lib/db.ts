@@ -189,7 +189,7 @@ export class Store {
     const needle = normalizeForSearch(query);
     if (!needle) return [];
     const candidates = await this.db.getAllAsync<{ id: string; body: string; kind: string; media: string | null }>(
-      "SELECT id, body, kind, media FROM messages WHERE kind IN ('text', 'file', 'image', 'video') AND deleted = 0 ORDER BY sent_at DESC",
+      "SELECT id, body, kind, media FROM messages WHERE (kind IN ('text', 'file') OR (kind IN ('image', 'video') AND body != '')) AND deleted = 0 ORDER BY sent_at DESC",
     );
     // Texto, comentarios de fotos/videos/documentos y el nombre de los documentos
     const fileName = (c: { kind: string; media: string | null }) => {

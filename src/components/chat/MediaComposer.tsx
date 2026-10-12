@@ -1,5 +1,5 @@
 // Vista previa antes de mandar fotos, videos o un documento, con una caja para escribir un comentario (como WhatsApp).
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { Image, KeyboardAvoidingView, Modal, Platform, ScrollView, Text, TextInput, TouchableOpacity, View } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { documentIcon, documentType, formatBytes } from '../../lib/documents';
@@ -19,10 +19,13 @@ export function MediaComposer({ items, peer, colors, initialCaption, onSend, onC
 }) {
   const [caption, setCaption] = useState('');
   const [selected, setSelected] = useState(0);
+  // Un doble toque en enviar no debe mandar todo dos veces
+  const sentRef = useRef(false);
 
   useEffect(() => {
     setCaption(initialCaption ?? '');
     setSelected(0);
+    sentRef.current = false;
   }, [items, initialCaption]);
 
   if (!items || items.length === 0) return null;
@@ -86,7 +89,11 @@ export function MediaComposer({ items, peer, colors, initialCaption, onSend, onC
               style={{ flex: 1, minHeight: 46, maxHeight: 120, backgroundColor: '#1e1e22', color: '#fff', borderRadius: 23, paddingHorizontal: 16, paddingTop: 12, paddingBottom: 12, fontSize: 16 }}
             />
             <TouchableOpacity
-              onPress={() => onSend(caption)}
+              onPress={() => {
+                if (sentRef.current) return;
+                sentRef.current = true;
+                onSend(caption);
+              }}
               hitSlop={10}
               activeOpacity={0.8}
               style={{ width: 48, height: 48, borderRadius: 24, backgroundColor: colors.primary, alignItems: 'center', justifyContent: 'center', marginLeft: 8 }}

@@ -144,6 +144,7 @@ export function ShareScreen({ state, payloads, onDone }: { state: ClientState; p
           <FlatList
             data={state.contacts}
             keyExtractor={(item) => item.username}
+            keyboardShouldPersistTaps="handled"
             contentContainerStyle={{ paddingHorizontal: 12, paddingBottom: 32 }}
             ListEmptyComponent={
               <View style={styles.emptyState}>
