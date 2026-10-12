@@ -117,6 +117,17 @@ const retryDownload = (id: string) => client.retryDownload(id);
 
 const MAX_PICK = 10; // fotos/videos a la vez desde la galeria
 
+// Boton de nota de voz: una onda de sonido dibujada (a proposito no es un microfono)
+function VoiceWaveIcon({ color }: { color: string }) {
+  return (
+    <View style={{ flexDirection: 'row', alignItems: 'center', height: 22 }}>
+      {[8, 16, 22, 12, 18, 9].map((h, i) => (
+        <View key={i} style={{ width: 3, height: h, borderRadius: 2, backgroundColor: color, marginHorizontal: 1.5 }} />
+      ))}
+    </View>
+  );
+}
+
 export function ChatScreen({ state, peer }: { state: ClientState; peer: string }) {
   const { isDark, colors, styles } = useChatTheme();
   const appearance = useAppearance();
@@ -126,6 +137,7 @@ export function ChatScreen({ state, peer }: { state: ClientState; peer: string }
   const [inputText, setInputText] = useState('');
   const [showStickers, setShowStickers] = useState(false);
   const [attachMenu, setAttachMenu] = useState(false);
+  const [cameraMenu, setCameraMenu] = useState(false);
   // Fotos/videos/documento elegidos, esperando el comentario antes de mandarse
   const [pending, setPending] = useState<PendingItem[] | null>(null);
   const inputRef = useRef<TextInput>(null);
@@ -349,8 +361,12 @@ export function ChatScreen({ state, peer }: { state: ClientState; peer: string }
     setReplyTo(null);
   };
 
+  const openCamera = () => {
+    if (Platform.OS === 'android') setCameraMenu(true);
+    else pickMedia('camera');
+  };
+
   const chooseMediaSource = () => {
-    // Menu propio: el aviso del sistema en Android solo muestra 3 botones
     setAttachMenu(true);
   };
 
@@ -734,9 +750,13 @@ export function ChatScreen({ state, peer }: { state: ClientState; peer: string }
             </View>
           )}
 
-          {/* Como WhatsApp: la caja con la camara adentro, y un solo boton redondo que es microfono
-              cuando no hay texto y enviar cuando si hay */}
+          {/* [+] adjuntar · caja con stickers, texto y camara · un boton redondo: enviar si hay texto, nota de voz si no */}
           <View style={styles.composerRow}>
+            {!isRecording && !editing && (
+              <TouchableOpacity onPress={chooseMediaSource} style={styles.composerPlus} hitSlop={6} activeOpacity={0.6}>
+                <Text style={[styles.composerPlusText, { color: colors.accent }]}>+</Text>
+              </TouchableOpacity>
+            )}
             {isRecording ? (
               <View style={styles.composerBox}>
                 <TouchableOpacity onPress={cancelRecording} style={styles.composerIconButton} activeOpacity={0.6}>
@@ -762,7 +782,7 @@ export function ChatScreen({ state, peer }: { state: ClientState; peer: string }
                     style={styles.composerIconButton}
                     activeOpacity={0.6}
                   >
-                    <Text style={styles.composerIcon}>{showStickers ? '⌨️' : '🏷'}</Text>
+                    <Text style={styles.composerIcon}>{showStickers ? '⌨️' : '😜'}</Text>
                   </TouchableOpacity>
                 )}
                 <TextInput
@@ -776,7 +796,7 @@ export function ChatScreen({ state, peer }: { state: ClientState; peer: string }
                   multiline
                 />
                 {!editing && (
-                  <TouchableOpacity onPress={chooseMediaSource} style={styles.composerIconButton} activeOpacity={0.6}>
+                  <TouchableOpacity onPress={openCamera} style={styles.composerIconButton} activeOpacity={0.6}>
                     <Text style={styles.composerIcon}>📷</Text>
                   </TouchableOpacity>
                 )}
@@ -792,7 +812,7 @@ export function ChatScreen({ state, peer }: { state: ClientState; peer: string }
               </TouchableOpacity>
             ) : (
               <TouchableOpacity style={styles.composerAction} onPress={startRecording} hitSlop={10} activeOpacity={0.8}>
-                <Text style={styles.composerActionIcon}>🎤</Text>
+                <VoiceWaveIcon color={styles.composerActionIcon.color as string} />
               </TouchableOpacity>
             )}
           </View>
@@ -868,6 +888,18 @@ export function ChatScreen({ state, peer }: { state: ClientState; peer: string }
         onSend={(caption) => pending && sendPending(pending, caption)}
       />
       <OptionsModal
+        visible={cameraMenu}
+        plain
+        title="CÁMARA"
+        message="En Android la cámara abre en un solo modo."
+        styles={styles}
+        onClose={() => setCameraMenu(false)}
+        options={[
+          { label: '📷  Tomar foto', onPress: () => setTimeout(() => pickMedia('cameraPhoto'), 400) },
+          { label: '🎥  Grabar video (hasta 20 s)', onPress: () => setTimeout(() => pickMedia('cameraVideo'), 400) },
+        ]}
+      />
+      <OptionsModal
         visible={attachMenu}
         plain
         title="ENVIAR"
@@ -875,13 +907,7 @@ export function ChatScreen({ state, peer }: { state: ClientState; peer: string }
         onClose={() => setAttachMenu(false)}
         options={[
           // Se abre un momento despues de cerrar este menu: el iPhone no deja abrir otra ventana mientras se cierra una
-          ...(Platform.OS === 'android'
-            ? [
-                { label: '📷  Tomar foto', onPress: () => setTimeout(() => pickMedia('cameraPhoto'), 400) },
-                { label: '🎥  Grabar video', onPress: () => setTimeout(() => pickMedia('cameraVideo'), 400) },
-              ]
-            : [{ label: '📷  Cámara (foto o video)', onPress: () => setTimeout(() => pickMedia('camera'), 400) }]),
-          { label: '🖼  Foto o video de la galería', onPress: () => setTimeout(() => pickMedia('library'), 400) },
+          { label: '🖼  Fotos y videos de la galería', onPress: () => setTimeout(() => pickMedia('library'), 400) },
           { label: '📄  Documento', onPress: () => setTimeout(pickDocument, 400) },
         ]}
       />

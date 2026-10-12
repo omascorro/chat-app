@@ -422,6 +422,8 @@ export function createStyles(COLORS: Colors) {
       paddingTop: 11, paddingBottom: 11, maxHeight: 120,
     },
     composerIconButton: { width: 40, height: 40, alignItems: 'center', justifyContent: 'center' },
+    composerPlus: { width: 36, height: 46, alignItems: 'center', justifyContent: 'center', marginRight: 2 },
+    composerPlusText: { fontSize: 32, fontWeight: '300', lineHeight: 36 },
     composerIcon: { fontSize: 20 },
     composerAction: {
       width: 46, height: 46, borderRadius: 23,
