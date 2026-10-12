@@ -1,5 +1,6 @@
 import { Text, TouchableOpacity, View } from 'react-native';
 import { ChatMessage } from '../../lib/types';
+import { captionOf, fileNameOf } from '../../lib/documents';
 import { DocumentCard } from './DocumentCard';
 import { LinkableText } from './LinkableText';
 import { EncryptedImage, EncryptedSticker, EncryptedVideo, EncryptedVoice, QuoteThumb } from './MediaViews';
@@ -16,11 +17,11 @@ export function describeMessage(m: ChatMessage | null): string {
   if (m.kind === 'sticker' && m.media) return '🏷 Sticker';
   switch (m.kind) {
     case 'image':
-      return '📷 Foto';
+      return m.body ? '📷 ' + m.body : '📷 Foto';
     case 'video':
-      return '🎬 Video';
+      return m.body ? '🎬 ' + m.body : '🎬 Video';
     case 'file':
-      return '📄 ' + (m.body || 'Documento');
+      return '📄 ' + (captionOf(m) || fileNameOf(m));
     case 'voice':
       return m.duration ? `🎤 Nota de voz (${Math.floor(m.duration / 60)}:${String(m.duration % 60).padStart(2, '0')})` : '🎤 Nota de voz';
     default:
@@ -96,6 +97,19 @@ export function MessageBubble({ message: item, quoted, me, peer, epoch, styles, 
     content = <EncryptedVoice {...mediaProps} textColor={mine ? styles.myText.color : styles.theirText.color} />;
   } else {
     content = <LinkableText text={item.body} textStyle={mine ? styles.myText : styles.theirText} linkStyle={mine ? styles.myLinkText : styles.theirLinkText} />;
+  }
+
+  // Comentario escrito al mandar la foto, video o documento (como WhatsApp), debajo del archivo
+  const caption = !item.deleted && !item.viewOnce && (item.kind === 'image' || item.kind === 'video' || item.kind === 'file') ? captionOf(item) : '';
+  if (caption) {
+    content = (
+      <>
+        {content}
+        <View style={isMedia ? { paddingHorizontal: 8, paddingTop: 6, paddingBottom: 2, maxWidth: 220 } : { marginTop: 6 }}>
+          <LinkableText text={caption} textStyle={mine ? styles.myText : styles.theirText} linkStyle={mine ? styles.myLinkText : styles.theirLinkText} />
+        </View>
+      </>
+    );
   }
 
   const replyId = item.replyTo;

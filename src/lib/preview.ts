@@ -112,15 +112,17 @@ const MAX_PREVIEW_CHARS = 120;
 export function previewText(p: { kind: string; body?: string; ttl?: number; selfDestruct?: boolean; viewOnce?: boolean; media?: unknown }): string {
   if (p.ttl || p.selfDestruct) return '⏱ Mensaje temporal';
   if (p.viewOnce) return '📷 Foto de ver una vez';
+  const caption = (p.body ?? '').replace(/\s+/g, ' ').trim();
+  const withCaption = (label: string) => (caption ? `${label.split(' ')[0]} ${caption.slice(0, MAX_PREVIEW_CHARS)}` : label);
   switch (p.kind) {
     case 'image':
-      return '📷 Foto';
+      return withCaption('📷 Foto');
     case 'video':
-      return '🎬 Video';
+      return withCaption('🎬 Video');
     case 'voice':
       return '🎤 Nota de voz';
     case 'file':
-      return '📄 Documento';
+      return withCaption('📄 Documento');
     case 'sticker':
       return p.media ? '🏷 Sticker' : (p.body ?? '').slice(0, MAX_PREVIEW_CHARS);
     default: {

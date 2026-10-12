@@ -399,11 +399,12 @@ test('nota de voz en segundo plano: al salir de la app no se borra la que esta s
 test('documentos: se mandan cifrados con su nombre, se abren identicos y aparecen en la seccion Documentos', async () => {
   const [a, b, na, nb] = await pair();
   const secret = 'Contrato confidencial: numero de cuenta 123-456';
-  await a.run('sendDocument', nb, '../../contrato final.pdf', secret);
+  await a.run('sendDocument', nb, '../../contrato final.pdf', secret, 'te lo mando firmado');
   const got = await waitFor('beto recibe el documento', () => msgs(b, na), (l) => l.some((m) => m.kind === 'file' && m.hasFile));
   const doc = got.find((m) => m.kind === 'file')!;
-  assert.ok(!doc.body.includes('/') && doc.body.endsWith('contrato final.pdf'), `el nombre llega limpio: ${doc.body}`);
+  assert.equal(doc.body, 'te lo mando firmado', 'el comentario llega con el documento');
   const opened = await b.run<any>('decryptDocument', na, doc.id);
+  assert.ok(!opened.media.name.includes('/') && opened.media.name.endsWith('contrato final.pdf'), `el nombre llega limpio: ${opened.media.name}`);
   assert.equal(opened.text, secret, 'se abre identico');
   assert.ok(opened.file.endsWith('.pdf'), 'se guarda con su extension para abrirlo con otra app');
   assert.equal(opened.media.mime, 'application/pdf');
@@ -417,6 +418,13 @@ test('documentos: se mandan cifrados con su nombre, se abren identicos y aparece
   assert.deepEqual([filesB.length, filesA.length], [1, 1], 'aparece en Documentos en los dos telefonos');
   const found = await b.run<any[]>('call', 'searchAll', 'contrato');
   assert.ok(found.some((m) => m.id === doc.id), 'la busqueda encuentra el documento por su nombre');
+  const byCaption = await b.run<any[]>('call', 'searchAll', 'firmado');
+  assert.ok(byCaption.some((m) => m.id === doc.id), 'y por su comentario');
+  // Foto con comentario
+  await a.run('sendImageWithCaption', nb, 'mira que bonito atardecer');
+  const withPhoto = await waitFor('beto recibe la foto con comentario', () => msgs(b, na), (l) => l.some((m) => m.kind === 'image' && m.hasFile));
+  assert.equal(withPhoto.find((m) => m.kind === 'image')!.body, 'mira que bonito atardecer', 'el comentario llega con la foto');
+  assert.equal(await b.run('decryptMedia', na, withPhoto.find((m) => m.kind === 'image')!.id), await b.run('testPng'), 'y la foto identica');
   await Promise.all([a.close(), b.close()]);
 });
 

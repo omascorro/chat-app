@@ -18,8 +18,19 @@ export async function openDocument(message: ChatMessage): Promise<void> {
   if (!(await Sharing.isAvailableAsync())) throw new Error('Este teléfono no puede abrir documentos desde la app');
   await Sharing.shareAsync(uri, {
     mimeType: message.media.mime ?? 'application/octet-stream',
-    dialogTitle: message.body || 'Documento',
+    dialogTitle: fileNameOf(message),
   });
+}
+
+// Nombre del documento. Los primeros documentos (antes de los comentarios) lo guardaban en el cuerpo del mensaje.
+export function fileNameOf(m: ChatMessage): string {
+  return m.media?.name || m.body || 'Documento';
+}
+
+// Comentario escrito al mandar una foto, video o documento (vacio si no hay)
+export function captionOf(m: ChatMessage): string {
+  if (m.kind === 'file' && m.body === m.media?.name) return '';
+  return m.body;
 }
 
 export function formatBytes(bytes: number | undefined): string {

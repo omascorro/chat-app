@@ -188,10 +188,22 @@ export class Store {
   async searchAll(query: string, limit = 100): Promise<ChatMessage[]> {
     const needle = normalizeForSearch(query);
     if (!needle) return [];
-    const candidates = await this.db.getAllAsync<{ id: string; body: string }>(
-      "SELECT id, body FROM messages WHERE kind IN ('text', 'file') AND deleted = 0 ORDER BY sent_at DESC",
+    const candidates = await this.db.getAllAsync<{ id: string; body: string; kind: string; media: string | null }>(
+      "SELECT id, body, kind, media FROM messages WHERE kind IN ('text', 'file', 'image', 'video') AND deleted = 0 ORDER BY sent_at DESC",
     );
-    const ids = candidates.filter((c) => normalizeForSearch(c.body).includes(needle)).slice(0, limit).map((c) => c.id);
+    // Texto, comentarios de fotos/videos/documentos y el nombre de los documentos
+    const fileName = (c: { kind: string; media: string | null }) => {
+      if (c.kind !== 'file' || !c.media) return '';
+      try {
+        return (JSON.parse(c.media) as MediaRef).name ?? '';
+      } catch {
+        return '';
+      }
+    };
+    const ids = candidates
+      .filter((c) => normalizeForSearch(c.body).includes(needle) || normalizeForSearch(fileName(c)).includes(needle))
+      .slice(0, limit)
+      .map((c) => c.id);
     if (ids.length === 0) return [];
     const rows = await this.db.getAllAsync<MessageRow>(
       `SELECT * FROM messages WHERE id IN (${ids.map(() => '?').join(', ')}) ORDER BY sent_at DESC`,

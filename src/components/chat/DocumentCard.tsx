@@ -1,6 +1,6 @@
 import { useState } from 'react';
 import { ActivityIndicator, Alert, Text, TouchableOpacity, View } from 'react-native';
-import { documentIcon, documentType, formatBytes, openDocument } from '../../lib/documents';
+import { documentIcon, documentType, fileNameOf, formatBytes, openDocument } from '../../lib/documents';
 import { ChatMessage } from '../../lib/types';
 import { ChatStyles } from './useChatTheme';
 
@@ -13,7 +13,7 @@ export function DocumentCard({ message, styles, textColor, onLongPress, onRetryD
   onRetryDownload: (id: string) => void;
 }) {
   const [opening, setOpening] = useState(false);
-  const name = message.body || 'Documento';
+  const name = fileNameOf(message);
   const ready = message.downloadState === 'done' && !!message.mediaFile;
   const failed = message.downloadState === 'failed';
 

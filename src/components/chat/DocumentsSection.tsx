@@ -1,7 +1,7 @@
 import { useEffect, useState } from 'react';
 import { ActivityIndicator, Alert, Text, TouchableOpacity, View } from 'react-native';
 import { client } from '../../lib/client';
-import { documentIcon, documentType, formatBytes, openDocument } from '../../lib/documents';
+import { captionOf, documentIcon, documentType, fileNameOf, formatBytes, openDocument } from '../../lib/documents';
 import { ChatMessage } from '../../lib/types';
 import { Colors } from './theme';
 import { ChatStyles } from './useChatTheme';
@@ -67,12 +67,13 @@ export function DocumentsSection({ peer, me, reloadKey, styles, colors, onGoToMe
               activeOpacity={0.7}
             >
               <View style={{ width: 40, height: 46, borderRadius: 8, backgroundColor: colors.card, borderWidth: 1, borderColor: colors.border, alignItems: 'center', justifyContent: 'center', marginRight: 10 }}>
-                {opening === m.id ? <ActivityIndicator color={colors.accent} /> : <Text style={{ fontSize: 22 }}>{documentIcon(m.body)}</Text>}
+                {opening === m.id ? <ActivityIndicator color={colors.accent} /> : <Text style={{ fontSize: 22 }}>{documentIcon(fileNameOf(m))}</Text>}
               </View>
               <View style={{ flex: 1 }}>
-                <Text style={styles.settingsLabel} numberOfLines={2}>{m.body || 'Documento'}</Text>
+                <Text style={styles.settingsLabel} numberOfLines={2}>{fileNameOf(m)}</Text>
+                {!!captionOf(m) && <Text style={[styles.settingsHint, { fontStyle: 'italic' }]} numberOfLines={2}>“{captionOf(m)}”</Text>}
                 <Text style={styles.settingsHint} numberOfLines={1}>
-                  {[m.fromMe ? `Enviado por ${me}` : `De ${peer}`, formatDate(m.sentAt), documentType(m.body), formatBytes(m.media?.bytes)].filter(Boolean).join(' · ')}
+                  {[m.fromMe ? `Enviado por ${me}` : `De ${peer}`, formatDate(m.sentAt), documentType(fileNameOf(m)), formatBytes(m.media?.bytes)].filter(Boolean).join(' · ')}
                 </Text>
                 <TouchableOpacity onPress={() => onGoToMessage(m.id)} hitSlop={8} activeOpacity={0.6}>
                   <Text style={[styles.settingsHint, { color: colors.accent, fontWeight: '700', marginTop: 2 }]}>Ver en el chat</Text>

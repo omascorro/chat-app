@@ -39,6 +39,11 @@ function cleanMediaRef(m: MediaRef): MediaRef {
   };
 }
 
+// Comentario de una foto, video o documento
+function cleanCaption(caption: string | undefined): string {
+  return (caption ?? '').trim().slice(0, MAX_TEXT_LENGTH);
+}
+
 function fromB64Safe(value: string): Uint8Array | null {
   try {
     return value ? fromB64(value) : null;
@@ -974,7 +979,7 @@ export class ChatClient {
     if (!store) return [];
     const q = query.trim().toLowerCase();
     const all = await store.getMessages(peer, 5000);
-    return all.filter((m) => !m.deleted && (m.kind === 'text' || m.kind === 'sticker' || m.kind === 'file') && m.body.toLowerCase().includes(q));
+    return all.filter((m) => !m.deleted && m.kind !== 'system' && (m.body.toLowerCase().includes(q) || (m.kind === 'file' && (m.media?.name ?? '').toLowerCase().includes(q))));
   }
 
   // ---------- recepcion ----------
@@ -1043,7 +1048,7 @@ export class ChatClient {
         peer: from,
         fromMe: false,
         kind: p.kind,
-        body: p.kind === 'file' ? safeFileName(p.media?.name) : typeof p.body === 'string' ? p.body.slice(0, MAX_TEXT_LENGTH) : '',
+        body: typeof p.body === 'string' ? p.body.slice(0, MAX_TEXT_LENGTH) : '',
         media: p.media ? cleanMediaRef(p.media) : null,
         mediaFile: null,
         downloadState: p.media ? 'pending' : 'none',
@@ -1500,13 +1505,14 @@ export class ChatClient {
   }
 
   // Documentos (PDF, Word, etc.): se cifran igual que las fotos; nombre y tipo van dentro del mensaje cifrado
-  async sendFile(peer: string, plainUri: string, file: { name: string; mime?: string | null }, options: { replyTo?: string | null } = {}) {
+  async sendFile(peer: string, plainUri: string, file: { name: string; mime?: string | null }, options: { replyTo?: string | null; caption?: string } = {}) {
     const bytes = await fileSize(plainUri);
     if (bytes > MAX_MEDIA_BYTES) {
       throw new Error(`El documento pesa ${Math.round(bytes / 1048576)} MB y el máximo es ${Math.round(MAX_MEDIA_BYTES / 1048576)} MB.`);
     }
     const name = safeFileName(file.name);
-    const message = this.newOutgoing(peer, 'file', name, { replyTo: options.replyTo ?? null });
+    // El cuerpo del mensaje es el comentario (como WhatsApp); el nombre del archivo viaja en media.name
+    const message = this.newOutgoing(peer, 'file', cleanCaption(options.caption), { replyTo: options.replyTo ?? null });
     const { media, mediaFile } = await importPlainFile(message.id, plainUri, 'file', true);
     const ref = { ...media, name, ...(file.mime ? { mime: file.mime.slice(0, 100) } : {}), bytes };
     await this.queueOutgoing({ ...message, media: ref, mediaFile, downloadState: 'done' });
@@ -1517,13 +1523,13 @@ export class ChatClient {
     return this.store ? this.store.getFileMessages(peer) : [];
   }
 
-  async sendMedia(peer: string, plainUri: string, kind: MediaKind, options: { duration?: number; replyTo?: string | null; viewOnce?: boolean } = {}) {
+  async sendMedia(peer: string, plainUri: string, kind: MediaKind, options: { duration?: number; replyTo?: string | null; viewOnce?: boolean; caption?: string } = {}) {
     // Se avisa de una vez, antes de cifrar: si no, un video enorme fallaba despues de varios minutos subiendo
     const bytes = await fileSize(plainUri);
     if (bytes > MAX_MEDIA_BYTES) {
       throw new Error(`${kind === 'video' ? 'El video' : 'El archivo'} pesa ${Math.round(bytes / 1048576)} MB y el máximo es ${Math.round(MAX_MEDIA_BYTES / 1048576)} MB. ${kind === 'video' ? 'Elige uno más corto o recórtalo antes de enviarlo.' : ''}`.trim());
     }
-    const message = this.newOutgoing(peer, kind, '', {
+    const message = this.newOutgoing(peer, kind, kind === 'voice' ? '' : cleanCaption(options.caption), {
       duration: options.duration ?? null,
       replyTo: options.replyTo ?? null,
       viewOnce: !!options.viewOnce && kind === 'image',

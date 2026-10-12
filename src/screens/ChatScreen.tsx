@@ -9,6 +9,7 @@ import { SafeAreaView } from 'react-native-safe-area-context';
 import { Avatar } from '../components/chat/Avatar';
 import { describeMessage, MessageBubble } from '../components/chat/MessageBubble';
 import { QuoteThumb } from '../components/chat/MediaViews';
+import { MediaComposer, PendingItem } from '../components/chat/MediaComposer';
 import { MessageActions, OptionsModal } from '../components/chat/Modals';
 import { ChatStyles, useChatTheme } from '../components/chat/useChatTheme';
 import { Colors } from '../components/chat/theme';
@@ -125,6 +126,8 @@ export function ChatScreen({ state, peer }: { state: ClientState; peer: string }
   const [inputText, setInputText] = useState('');
   const [showStickers, setShowStickers] = useState(false);
   const [attachMenu, setAttachMenu] = useState(false);
+  // Fotos/videos/documento elegidos, esperando el comentario antes de mandarse
+  const [pending, setPending] = useState<PendingItem[] | null>(null);
   const inputRef = useRef<TextInput>(null);
 
   // Regresar del panel de stickers al teclado (como WhatsApp)
@@ -356,13 +359,7 @@ export function ChatScreen({ state, peer }: { state: ClientState; peer: string }
     const result = await DocumentPicker.getDocumentAsync({ copyToCacheDirectory: true, multiple: false });
     const asset = result.canceled ? null : result.assets?.[0];
     if (!asset?.uri) return;
-    try {
-      await client.sendFile(peer, asset.uri, { name: asset.name, mime: asset.mimeType }, { replyTo: replyTo?.id ?? null });
-      setReplyTo(null);
-    } catch (e) {
-      deleteIfAppFile(asset.uri);
-      Alert.alert('No se pudo enviar el documento', String((e as Error)?.message ?? e));
-    }
+    setPending([{ kind: 'file', uri: asset.uri, name: asset.name, mime: asset.mimeType, size: asset.size }]);
   };
 
   // cameraPhoto / cameraVideo: en Android la camara solo abre en un modo (foto O video); si se piden los dos, abre
@@ -396,36 +393,51 @@ export function ChatScreen({ state, peer }: { state: ClientState; peer: string }
     }
     const assets = result.canceled ? [] : (result.assets ?? []).filter((a) => !!a.uri);
     if (assets.length === 0) return;
-    // Cada foto/video es un mensaje (como WhatsApp), en el orden en que los elegiste. Si estabas respondiendo,
-    // la respuesta va en el primero.
+    setPending(assets.map((a) => ({ kind: a.type === 'video' ? 'video' : 'image', uri: a.uri, width: a.width })));
+  };
+
+  // Manda lo que estaba en la vista previa. Cada foto/video es un mensaje (como WhatsApp), en el orden en que los
+  // elegiste; el comentario y la respuesta van en el primero.
+  const sendPending = async (items: PendingItem[], caption: string) => {
+    setPending(null);
     const replyId = replyTo?.id ?? null;
     setReplyTo(null);
+    if (caption.trim() && caption === inputText) setInputText('');
     const failures: string[] = [];
-    for (const [i, asset] of assets.entries()) {
-      const isVideo = asset.type === 'video';
-      let uri = asset.uri;
+    for (const [i, item] of items.entries()) {
+      const first = i === 0;
+      let uri = item.uri;
       try {
-        if (!isVideo) {
+        if (item.kind === 'file') {
+          await client.sendFile(peer, item.uri, { name: item.name, mime: item.mime }, { replyTo: first ? replyId : null, caption: first ? caption : '' });
+          continue;
+        }
+        if (item.kind === 'image') {
           // Las fotos SIEMPRE se vuelven a codificar: asi se eliminan los datos ocultos (EXIF) como la ubicacion GPS,
           // el modelo del telefono o la fecha. Si no se puede, la foto no se envia.
-          const clean = await reencodeImage(asset.uri, asset.width);
+          const clean = await reencodeImage(item.uri, item.width);
           if (!clean) {
             failures.push('Una foto no se envió: no se le pudieron quitar sus datos ocultos (como la ubicación).');
             continue;
           }
           uri = clean;
         }
-        await client.sendMedia(peer, uri, isVideo ? 'video' : 'image', { replyTo: i === 0 ? replyId : null });
+        await client.sendMedia(peer, uri, item.kind, { replyTo: first ? replyId : null, caption: first ? caption : '' });
       } catch (e) {
         failures.push(String((e as Error)?.message ?? e));
       } finally {
         // La copia sin cifrar que dejo el selector en la carpeta temporal no se queda en el telefono
-        deleteIfAppFile(asset.uri);
+        deleteIfAppFile(item.uri);
       }
     }
     if (failures.length > 0) {
-      Alert.alert(failures.length === assets.length ? 'No se pudo enviar' : `${assets.length - failures.length} de ${assets.length} enviados`, failures.join('\n\n'));
+      Alert.alert(failures.length === items.length ? 'No se pudo enviar' : `${items.length - failures.length} de ${items.length} enviados`, failures.join('\n\n'));
     }
+  };
+
+  const cancelPending = () => {
+    for (const item of pending ?? []) deleteIfAppFile(item.uri);
+    setPending(null);
   };
 
   const startRecording = async () => {
@@ -846,6 +858,14 @@ export function ChatScreen({ state, peer }: { state: ClientState; peer: string }
         visible={!!viewOnceOpen}
         onRequestClose={closeViewOnce}
         swipeToCloseEnabled={false}
+      />
+      <MediaComposer
+        items={pending}
+        peer={peer}
+        colors={colors}
+        initialCaption={inputText}
+        onCancel={cancelPending}
+        onSend={(caption) => pending && sendPending(pending, caption)}
       />
       <OptionsModal
         visible={attachMenu}

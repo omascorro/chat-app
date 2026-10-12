@@ -182,9 +182,9 @@ const commands: Record<string, (...args: any[]) => Promise<unknown>> = {
     await media.wipeCache();
     return { ...result, afterStop: await media.fileExists(playing) };
   },
-  async sendDocument(peer: string, name: string, text: string) {
+  async sendDocument(peer: string, name: string, text: string, caption?: string) {
     const uri = makeTestFile(`doc-${Date.now()}.tmp`, Buffer.from(text, 'utf8'));
-    await client.sendFile(peer, uri, { name, mime: 'application/pdf' });
+    await client.sendFile(peer, uri, { name, mime: 'application/pdf' }, { caption });
   },
   // Descifra un documento recibido y devuelve su contenido y el nombre del archivo en disco
   async decryptDocument(peer: string, id: string) {
@@ -196,6 +196,10 @@ const commands: Record<string, (...args: any[]) => Promise<unknown>> = {
     const uri = await decryptToCache(m.id, 'file', m.mediaFile, m.media);
     const path = decodeURIComponent(uri.replace(/^file:\/\//, ''));
     return { text: fs.readFileSync(path, 'utf8'), file: path.split(/[\\/]/).pop(), media: m.media };
+  },
+  async sendImageWithCaption(peer: string, caption: string) {
+    const uri = makeTestFile(`foto-${Date.now()}.png`, PNG);
+    await client.sendMedia(peer, uri, 'image', { caption });
   },
   async testPng() {
     return PNG.toString('base64');
