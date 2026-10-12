@@ -4,7 +4,7 @@ import { File, Paths } from 'expo-file-system';
 import { ResolvedSharePayload } from 'expo-sharing';
 import { StatusBar } from 'expo-status-bar';
 import { useState } from 'react';
-import { ActivityIndicator, Alert, FlatList, Image, ScrollView, Text, TouchableOpacity, View } from 'react-native';
+import { ActivityIndicator, Alert, FlatList, Image, ScrollView, Text, TextInput, TouchableOpacity, View } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { Avatar } from '../components/chat/Avatar';
 import { useChatTheme } from '../components/chat/useChatTheme';
@@ -54,11 +54,14 @@ function forgetOriginal(uri: string) {
 export function ShareScreen({ state, payloads, onDone }: { state: ClientState; payloads: ResolvedSharePayload[]; onDone: () => void }) {
   const { isDark, colors, styles } = useChatTheme();
   const [sending, setSending] = useState<string | null>(null);
+  // Comentario como en el chat (va en el primero si compartes varios)
+  const [caption, setCaption] = useState('');
   const items = payloads.filter(isSendable);
 
   const sendTo = async (peer: string) => {
     setSending(peer);
     let failed = 0;
+    let first = true;
     for (const p of items) {
       try {
         const prepared = await prepare(p);
@@ -66,7 +69,8 @@ export function ShareScreen({ state, payloads, onDone }: { state: ClientState; p
           failed++;
           continue;
         }
-        await client.sendMedia(peer, prepared.uri, prepared.kind);
+        await client.sendMedia(peer, prepared.uri, prepared.kind, { caption: first ? caption : '' });
+        first = false;
       } catch (e) {
         log('No se pudo mandar lo compartido:', e);
         failed++;
@@ -118,6 +122,19 @@ export function ShareScreen({ state, payloads, onDone }: { state: ClientState; p
             ),
           )}
         </ScrollView>
+
+        {items.length > 0 && (
+          <TextInput
+            style={[styles.searchPill, { marginTop: 4, height: undefined, minHeight: 44, maxHeight: 110, paddingTop: 12, paddingBottom: 12 }]}
+            value={caption}
+            onChangeText={setCaption}
+            placeholder={items.length > 1 ? 'Añade un comentario (va en el primero)…' : 'Añade un comentario…'}
+            placeholderTextColor={colors.textMuted}
+            multiline
+            maxLength={2000}
+            editable={!sending}
+          />
+        )}
 
         {items.length === 0 ? (
           <View style={styles.emptyState}>
