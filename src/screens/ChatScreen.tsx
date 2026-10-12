@@ -114,6 +114,8 @@ const ChatRow = memo(
 const retrySend = (id: string) => client.retrySend(id);
 const retryDownload = (id: string) => client.retryDownload(id);
 
+const MAX_PICK = 10; // fotos/videos a la vez desde la galeria
+
 export function ChatScreen({ state, peer }: { state: ClientState; peer: string }) {
   const { isDark, colors, styles } = useChatTheme();
   const appearance = useAppearance();
@@ -344,16 +346,6 @@ export function ChatScreen({ state, peer }: { state: ClientState; peer: string }
     setReplyTo(null);
   };
 
-  // Para fotos se pregunta si es normal o de "ver una vez"
-  const askImageMode = () =>
-    new Promise<'normal' | 'viewOnce' | null>((resolve) => {
-      Alert.alert('Enviar foto', '¿Cómo quieres mandarla?', [
-        { text: 'Cancelar', style: 'cancel', onPress: () => resolve(null) },
-        { text: 'Ver una vez', onPress: () => resolve('viewOnce') },
-        { text: 'Normal', onPress: () => resolve('normal') },
-      ], { cancelable: true, onDismiss: () => resolve(null) });
-    });
-
   const chooseMediaSource = () => {
     // Menu propio: el aviso del sistema en Android solo muestra 3 botones
     setAttachMenu(true);
@@ -384,6 +376,10 @@ export function ChatScreen({ state, peer }: { state: ClientState; peer: string }
       // iPhone: los videos se comprimen (antes iban en calidad original y pesaban decenas de MB). Android no lo permite.
       videoExportPreset: ImagePicker.VideoExportPreset.H264_960x540,
       videoQuality: ImagePicker.UIImagePickerControllerQualityType.Medium,
+      // Galeria: varias fotos y videos a la vez (la camara siempre es de una)
+      allowsMultipleSelection: source === 'library',
+      selectionLimit: MAX_PICK,
+      orderedSelection: true,
     };
     let result: ImagePicker.ImagePickerResult;
     if (source !== 'library') {
@@ -398,39 +394,37 @@ export function ChatScreen({ state, peer }: { state: ClientState; peer: string }
       if (!permission.granted) return;
       result = await ImagePicker.launchImageLibraryAsync(options);
     }
-    const asset = result.canceled ? null : result.assets?.[0];
-    if (!asset?.uri) return;
-    const isVideo = asset.type === 'video';
-    let viewOnce = false;
-    if (!isVideo) {
-      const mode = await askImageMode();
-      if (!mode) {
+    const assets = result.canceled ? [] : (result.assets ?? []).filter((a) => !!a.uri);
+    if (assets.length === 0) return;
+    // Cada foto/video es un mensaje (como WhatsApp), en el orden en que los elegiste. Si estabas respondiendo,
+    // la respuesta va en el primero.
+    const replyId = replyTo?.id ?? null;
+    setReplyTo(null);
+    const failures: string[] = [];
+    for (const [i, asset] of assets.entries()) {
+      const isVideo = asset.type === 'video';
+      let uri = asset.uri;
+      try {
+        if (!isVideo) {
+          // Las fotos SIEMPRE se vuelven a codificar: asi se eliminan los datos ocultos (EXIF) como la ubicacion GPS,
+          // el modelo del telefono o la fecha. Si no se puede, la foto no se envia.
+          const clean = await reencodeImage(asset.uri, asset.width);
+          if (!clean) {
+            failures.push('Una foto no se envió: no se le pudieron quitar sus datos ocultos (como la ubicación).');
+            continue;
+          }
+          uri = clean;
+        }
+        await client.sendMedia(peer, uri, isVideo ? 'video' : 'image', { replyTo: i === 0 ? replyId : null });
+      } catch (e) {
+        failures.push(String((e as Error)?.message ?? e));
+      } finally {
+        // La copia sin cifrar que dejo el selector en la carpeta temporal no se queda en el telefono
         deleteIfAppFile(asset.uri);
-        return;
       }
-      viewOnce = mode === 'viewOnce';
     }
-
-    let uri = asset.uri;
-    if (!isVideo) {
-      // Las fotos SIEMPRE se vuelven a codificar: asi se eliminan los datos ocultos (EXIF) como la ubicacion GPS,
-      // el modelo del telefono o la fecha. Si no se puede, la foto no se envia.
-      const clean = await reencodeImage(asset.uri, asset.width);
-      if (!clean) {
-        deleteIfAppFile(asset.uri);
-        Alert.alert('No se pudo preparar la foto', 'Por seguridad no se envió: no se pudieron quitar sus datos ocultos (como la ubicación).');
-        return;
-      }
-      uri = clean;
-    }
-    try {
-      await client.sendMedia(peer, uri, isVideo ? 'video' : 'image', { replyTo: replyTo?.id ?? null, viewOnce });
-      setReplyTo(null);
-    } catch (e) {
-      Alert.alert('No se pudo preparar el archivo', String((e as Error)?.message ?? e));
-    } finally {
-      // La copia sin cifrar que dejo el selector en la carpeta temporal no se queda en el telefono
-      if (uri !== asset.uri) deleteIfAppFile(asset.uri);
+    if (failures.length > 0) {
+      Alert.alert(failures.length === assets.length ? 'No se pudo enviar' : `${assets.length - failures.length} de ${assets.length} enviados`, failures.join('\n\n'));
     }
   };
 
