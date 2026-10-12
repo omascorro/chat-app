@@ -5,7 +5,7 @@ import { StatusBar } from 'expo-status-bar';
 import { memo, useEffect, useMemo, useRef, useState } from 'react';
 import { Alert, BackHandler, FlatList, Keyboard, KeyboardAvoidingView, Platform, Text, TextInput, TouchableOpacity, View } from 'react-native';
 import ImageViewing from 'react-native-image-viewing';
-import { SafeAreaView } from 'react-native-safe-area-context';
+import { SafeAreaView, useSafeAreaInsets } from 'react-native-safe-area-context';
 import { Avatar } from '../components/chat/Avatar';
 import { describeMessage, MessageBubble } from '../components/chat/MessageBubble';
 import { QuoteThumb } from '../components/chat/MediaViews';
@@ -137,6 +137,19 @@ export function ChatScreen({ state, peer }: { state: ClientState; peer: string }
   const [inputText, setInputText] = useState('');
   const [showStickers, setShowStickers] = useState(false);
   const [attachMenu, setAttachMenu] = useState(false);
+
+  // iPhone: con el teclado abierto no hace falta el margen de la barrita de inicio (quedaba un hueco grande)
+  const insets = useSafeAreaInsets();
+  const [keyboardOpen, setKeyboardOpen] = useState(false);
+  useEffect(() => {
+    if (Platform.OS !== 'ios') return;
+    const show = Keyboard.addListener('keyboardWillShow', () => setKeyboardOpen(true));
+    const hide = Keyboard.addListener('keyboardWillHide', () => setKeyboardOpen(false));
+    return () => {
+      show.remove();
+      hide.remove();
+    };
+  }, []);
   const [cameraMenu, setCameraMenu] = useState(false);
   // Fotos/videos/documento elegidos, esperando el comentario antes de mandarse
   const [pending, setPending] = useState<PendingItem[] | null>(null);
@@ -578,8 +591,10 @@ export function ChatScreen({ state, peer }: { state: ClientState; peer: string }
   return (
     <>
       <StatusBar style={isDark ? 'light' : 'dark'} />
-      <SafeAreaView style={styles.container} edges={['top', 'bottom']}>
-        <KeyboardAvoidingView style={{ flex: 1 }} behavior={Platform.OS === 'ios' ? 'padding' : 'height'} keyboardVerticalOffset={Platform.OS === 'ios' ? 90 : 0}>
+      {/* El margen de abajo se maneja aparte (ver keyboardOpen). Sin desplazamiento extra: la vista ya mide su posicion
+          desde arriba de la pantalla; antes se sumaban 90 fijos y en iPhone quedaba un hueco sobre el teclado. */}
+      <SafeAreaView style={styles.container} edges={['top']}>
+        <KeyboardAvoidingView style={{ flex: 1 }} behavior={Platform.OS === 'ios' ? 'padding' : 'height'} keyboardVerticalOffset={0}>
           {/* Mismo estilo que la barra de escritura: una caja redondeada con el contacto y botones redondos */}
           <View style={styles.topRow}>
             <View style={styles.topBox}>
@@ -832,6 +847,7 @@ export function ChatScreen({ state, peer }: { state: ClientState; peer: string }
               }}
             />
           )}
+          <View style={{ height: Platform.OS === 'ios' && keyboardOpen ? 0 : insets.bottom, backgroundColor: colors.bg }} />
         </KeyboardAvoidingView>
       </SafeAreaView>
       <MessageActions
