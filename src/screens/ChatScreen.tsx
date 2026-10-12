@@ -373,17 +373,20 @@ export function ChatScreen({ state, peer }: { state: ClientState; peer: string }
     }
   };
 
-  const pickMedia = async (source: 'camera' | 'library') => {
+  // cameraPhoto / cameraVideo: en Android la camara solo abre en un modo (foto O video); si se piden los dos, abre
+  // solo foto y no dejaba grabar. En iPhone 'camera' permite los dos.
+  const pickMedia = async (source: 'camera' | 'cameraPhoto' | 'cameraVideo' | 'library') => {
     const options: ImagePicker.ImagePickerOptions = {
-      mediaTypes: ['images', 'videos'],
+      mediaTypes: source === 'cameraPhoto' ? ['images'] : source === 'cameraVideo' ? ['videos'] : ['images', 'videos'],
       quality: 0.4,
-      videoMaxDuration: 30,
+      // Android graba sin comprimir (1080p ~15 Mbps): con 20 s el video cabe en el limite de 45 MB
+      videoMaxDuration: source === 'cameraVideo' ? 20 : 30,
       // iPhone: los videos se comprimen (antes iban en calidad original y pesaban decenas de MB). Android no lo permite.
       videoExportPreset: ImagePicker.VideoExportPreset.H264_960x540,
       videoQuality: ImagePicker.UIImagePickerControllerQualityType.Medium,
     };
     let result: ImagePicker.ImagePickerResult;
-    if (source === 'camera') {
+    if (source !== 'library') {
       const permission = await ImagePicker.requestCameraPermissionsAsync();
       if (!permission.granted) {
         Alert.alert('Sin permiso de cámara', 'Actívalo en la configuración del teléfono para tomar fotos desde la app.');
@@ -858,7 +861,12 @@ export function ChatScreen({ state, peer }: { state: ClientState; peer: string }
         onClose={() => setAttachMenu(false)}
         options={[
           // Se abre un momento despues de cerrar este menu: el iPhone no deja abrir otra ventana mientras se cierra una
-          { label: '📷  Cámara', onPress: () => setTimeout(() => pickMedia('camera'), 400) },
+          ...(Platform.OS === 'android'
+            ? [
+                { label: '📷  Tomar foto', onPress: () => setTimeout(() => pickMedia('cameraPhoto'), 400) },
+                { label: '🎥  Grabar video', onPress: () => setTimeout(() => pickMedia('cameraVideo'), 400) },
+              ]
+            : [{ label: '📷  Cámara (foto o video)', onPress: () => setTimeout(() => pickMedia('camera'), 400) }]),
           { label: '🖼  Foto o video de la galería', onPress: () => setTimeout(() => pickMedia('library'), 400) },
           { label: '📄  Documento', onPress: () => setTimeout(pickDocument, 400) },
         ]}
