@@ -797,7 +797,7 @@ export function ChatScreen({ state, peer }: { state: ClientState; peer: string }
                     style={styles.composerIconButton}
                     activeOpacity={0.6}
                   >
-                    <Text style={styles.composerIcon}>{showStickers ? '⌨️' : '😜'}</Text>
+                    <Text style={styles.composerIcon}>{showStickers ? '⌨️' : '🎭'}</Text>
                   </TouchableOpacity>
                 )}
                 <TextInput
