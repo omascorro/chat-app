@@ -70,6 +70,8 @@ export async function startServer(): Promise<{ url: string; storage: Map<string,
   process.env.PORT = String(port);
   process.env.SUPABASE_URL = `http://127.0.0.1:${storagePort}`;
   process.env.SUPABASE_SERVICE_ROLE_KEY = 'sb_secret_prueba';
+  // Todas las cuentas de prueba se registran desde 127.0.0.1
+  process.env.REGISTER_LIMIT_PER_IP = '100000';
   delete process.env.DB_CA_CERT;
 
   // 'pg' -> pg-mem (con traducciones para lo que pg-mem no soporta)
