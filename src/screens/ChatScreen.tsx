@@ -51,6 +51,8 @@ type RowProps = {
   handlers: RowHandlers;
   // Primer mensaje de su dia: lleva arriba el separador ("Hoy", "Ayer", "12 de octubre")
   dayLabel: string | null;
+  // Palabra buscada con la lupa (solo en los resultados): se resalta en amarillo
+  highlight?: string;
 };
 
 // Cada recarga de la base crea objetos nuevos con el mismo contenido: se comparan por valor
@@ -72,7 +74,7 @@ function sameMessage(a: ChatMessage | null, b: ChatMessage | null): boolean {
 // Una fila del chat. Solo se vuelve a dibujar si cambia SU mensaje: antes cualquier cambio (alguien escribiendo,
 // en linea, un porcentaje de subida) redibujaba todo el chat y el scroll se trababa.
 const ChatRow = memo(
-  function ChatRow({ item, quoted, me, peer, epoch, styles, colors, highlighted, uploadPercent, pinned, handlers, dayLabel }: RowProps) {
+  function ChatRow({ item, quoted, me, peer, epoch, styles, colors, highlighted, uploadPercent, pinned, handlers, dayLabel, highlight }: RowProps) {
     return (
       <>
       {dayLabel && <DaySeparator label={dayLabel} colors={colors} />}
@@ -99,6 +101,7 @@ const ChatRow = memo(
           highlighted={highlighted}
           uploadPercent={uploadPercent}
           pinned={pinned}
+          highlight={highlight}
         />
       </SwipeToReply>
       </>
@@ -116,7 +119,8 @@ const ChatRow = memo(
     a.uploadPercent === b.uploadPercent &&
     a.pinned === b.pinned &&
     a.handlers === b.handlers &&
-    a.dayLabel === b.dayLabel,
+    a.dayLabel === b.dayLabel &&
+    a.highlight === b.highlight,
 );
 
 function DaySeparator({ label, colors }: { label: string; colors: Colors }) {
@@ -756,6 +760,7 @@ export function ChatScreen({ state, peer }: { state: ClientState; peer: string }
                   pinned={pinnedIds.has(item.id)}
                   handlers={rowHandlers}
                   dayLabel={dayLabelAt(listData, index)}
+                  highlight={searching ? searchQuery : undefined}
                 />
                 {searching && (
                   <TouchableOpacity

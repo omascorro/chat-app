@@ -49,6 +49,7 @@ type Props = {
   onQuotePress?: (id: string) => void; // tocar la cita lleva al mensaje original
   uploadPercent?: number; // foto o video que se esta subiendo
   pinned?: boolean;
+  highlight?: string; // palabra buscada con la lupa: se resalta en el texto
 };
 
 function ViewOnceContent({ item, styles, onOpen, onRetryDownload, onLongPress }: { item: ChatMessage; styles: ChatStyles; onOpen: (m: ChatMessage) => void; onRetryDownload: (id: string) => void; onLongPress: () => void }) {
@@ -70,7 +71,7 @@ function ViewOnceContent({ item, styles, onOpen, onRetryDownload, onLongPress }:
   );
 }
 
-export function MessageBubble({ message: item, quoted, me, peer, epoch, styles, onLongPress, onZoom, onRetrySend, onRetryDownload, onOpenViewOnce, highlighted, pinned, onQuotePress, uploadPercent }: Props) {
+export function MessageBubble({ message: item, quoted, me, peer, epoch, styles, onLongPress, onZoom, onRetrySend, onRetryDownload, onOpenViewOnce, highlighted, pinned, onQuotePress, uploadPercent, highlight }: Props) {
   if (item.kind === 'system') {
     return (
       <View style={styles.systemRow}>
@@ -96,11 +97,11 @@ export function MessageBubble({ message: item, quoted, me, peer, epoch, styles, 
   } else if (item.kind === 'video') {
     content = <EncryptedVideo {...mediaProps} />;
   } else if (item.kind === 'file') {
-    content = <DocumentCard message={item} styles={styles} textColor={mine ? styles.myText.color : styles.theirText.color} onLongPress={() => onLongPress(item)} onRetryDownload={onRetryDownload} />;
+    content = <DocumentCard message={item} styles={styles} textColor={mine ? styles.myText.color : styles.theirText.color} onLongPress={() => onLongPress(item)} onRetryDownload={onRetryDownload} highlight={highlight} />;
   } else if (item.kind === 'voice') {
     content = <EncryptedVoice {...mediaProps} textColor={mine ? styles.myText.color : styles.theirText.color} />;
   } else {
-    content = <LinkableText text={item.body} textStyle={mine ? styles.myText : styles.theirText} linkStyle={mine ? styles.myLinkText : styles.theirLinkText} />;
+    content = <LinkableText text={item.body} textStyle={mine ? styles.myText : styles.theirText} linkStyle={mine ? styles.myLinkText : styles.theirLinkText} highlight={highlight} />;
   }
 
   // Comentario escrito al mandar la foto, video o documento (como WhatsApp), debajo del archivo
@@ -110,7 +111,7 @@ export function MessageBubble({ message: item, quoted, me, peer, epoch, styles, 
       <>
         {content}
         <View style={isMedia ? { paddingHorizontal: 8, paddingTop: 6, paddingBottom: 2, maxWidth: 220 } : { marginTop: 6 }}>
-          <LinkableText text={caption} textStyle={mine ? styles.myText : styles.theirText} linkStyle={mine ? styles.myLinkText : styles.theirLinkText} />
+          <LinkableText text={caption} textStyle={mine ? styles.myText : styles.theirText} linkStyle={mine ? styles.myLinkText : styles.theirLinkText} highlight={highlight} />
         </View>
       </>
     );

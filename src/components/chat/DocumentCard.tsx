@@ -1,16 +1,18 @@
 import { useState } from 'react';
 import { ActivityIndicator, Alert, Text, TouchableOpacity, View } from 'react-native';
 import { documentIcon, documentType, fileNameOf, formatBytes, openDocument } from '../../lib/documents';
+import { HIGHLIGHT_STYLE, splitByMatches } from '../../lib/highlight';
 import { ChatMessage } from '../../lib/types';
 import { ChatStyles } from './useChatTheme';
 
 // Documento dentro de una burbuja del chat: icono, nombre, tipo y tamaño. Tocarlo lo abre con las apps del telefono.
-export function DocumentCard({ message, styles, textColor, onLongPress, onRetryDownload }: {
+export function DocumentCard({ message, styles, textColor, onLongPress, onRetryDownload, highlight }: {
   message: ChatMessage;
   styles: ChatStyles;
   textColor: string;
   onLongPress?: () => void;
   onRetryDownload: (id: string) => void;
+  highlight?: string; // busqueda de la lupa: la parte del nombre que coincide va resaltada
 }) {
   const [opening, setOpening] = useState(false);
   const name = fileNameOf(message);
@@ -42,7 +44,9 @@ export function DocumentCard({ message, styles, textColor, onLongPress, onRetryD
         {opening ? <ActivityIndicator color={textColor} /> : <Text style={{ fontSize: 26 }}>{documentIcon(name)}</Text>}
       </View>
       <View style={{ flex: 1 }}>
-        <Text style={{ color: textColor, fontSize: 14, fontWeight: '700' }} numberOfLines={2}>{name}</Text>
+        <Text style={{ color: textColor, fontSize: 14, fontWeight: '700' }} numberOfLines={2}>
+          {highlight ? splitByMatches(name, highlight).map((p, i) => (p.match ? <Text key={i} style={HIGHLIGHT_STYLE}>{p.text}</Text> : p.text)) : name}
+        </Text>
         {!!details && <Text style={{ color: textColor, fontSize: 11, opacity: 0.75, marginTop: 2 }}>{details}</Text>}
         <Text style={[styles.timestamp, { color: textColor, opacity: 0.7, marginHorizontal: 0 }]}>{status}</Text>
       </View>

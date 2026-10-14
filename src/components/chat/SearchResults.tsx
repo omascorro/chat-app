@@ -1,5 +1,5 @@
 import { FlatList, Text, TouchableOpacity, View } from 'react-native';
-import { normalizeForSearch } from '../../lib/db';
+import { findMatches, HIGHLIGHT_STYLE, splitByMatches } from '../../lib/highlight';
 import { captionOf, fileNameOf } from '../../lib/documents';
 import { ChatMessage, Contact } from '../../lib/types';
 import { Avatar } from './Avatar';
@@ -14,16 +14,14 @@ function formatDate(ts: number) {
 
 // Fragmento alrededor de la coincidencia, con la parte encontrada resaltada
 function Snippet({ body, query, styles }: { body: string; query: string; styles: ChatStyles }) {
-  const at = normalizeForSearch(body).indexOf(normalizeForSearch(query));
-  if (at < 0) return <Text style={styles.resultBody} numberOfLines={2}>{body}</Text>;
-  const len = normalizeForSearch(query).length;
-  const start = Math.max(0, at - 40);
+  const first = findMatches(body, query)[0];
+  if (!first) return <Text style={styles.resultBody} numberOfLines={2}>{body}</Text>;
+  // Si la coincidencia esta lejos del principio, se empieza un poco antes de ella para que se vea
+  const start = Math.max(0, first[0] - 40);
   return (
     <Text style={styles.resultBody} numberOfLines={2}>
       {start > 0 ? '…' : ''}
-      {body.slice(start, at)}
-      <Text style={styles.resultMatch}>{body.slice(at, at + len)}</Text>
-      {body.slice(at + len)}
+      {splitByMatches(body.slice(start), query).map((p, i) => (p.match ? <Text key={i} style={HIGHLIGHT_STYLE}>{p.text}</Text> : p.text))}
     </Text>
   );
 }
