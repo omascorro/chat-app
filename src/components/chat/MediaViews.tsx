@@ -80,6 +80,28 @@ export function QuoteThumb({ message, epoch, size = 44 }: { message: ChatMessage
   return <Image source={{ uri }} style={{ width: size, height: size, borderRadius: 8, marginLeft: 8 }} resizeMode={message.kind === 'sticker' ? 'contain' : 'cover'} />;
 }
 
+// Cuadro de la seccion "Fotos y videos" de la info del contacto. Los videos no tienen miniatura (seria descifrar todo
+// el video para sacar un cuadro): se muestra un recuadro con ▶.
+export function MediaTile({ message, epoch, onPress, style }: { message: ChatMessage; epoch: number; onPress: () => void; style: any }) {
+  const isImage = message.kind === 'image';
+  const { uri, error } = useDecryptedUri(isImage ? message : { ...message, downloadState: 'none' }, epoch);
+  const ready = message.downloadState === 'done' && !!message.mediaFile;
+  return (
+    <TouchableOpacity onPress={onPress} activeOpacity={0.8} style={[style, { overflow: 'hidden', backgroundColor: 'rgba(0,0,0,0.3)', alignItems: 'center', justifyContent: 'center' }]}>
+      {isImage && uri ? (
+        <Image source={{ uri }} style={{ width: '100%', height: '100%' }} resizeMode="cover" />
+      ) : isImage ? (
+        <Text style={{ color: '#fff', fontSize: 12 }}>{!ready ? (message.downloadState === 'failed' ? '⚠' : '⬇') : error ? '⚠' : '…'}</Text>
+      ) : (
+        <>
+          <Text style={{ fontSize: 30, color: '#fff' }}>▶</Text>
+          <Text style={{ color: '#fff', fontSize: 11, fontWeight: '700', marginTop: 2 }}>🎬 Video</Text>
+        </>
+      )}
+    </TouchableOpacity>
+  );
+}
+
 export function EncryptedImage(props: MediaProps & { onZoom: (uri: string, messageId: string) => void }) {
   const { uri, error } = useDecryptedUri(props.message, props.epoch);
   if (!uri) return <Placeholder {...props} error={error} />;

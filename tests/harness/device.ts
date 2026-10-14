@@ -239,6 +239,19 @@ const commands: Record<string, (...args: any[]) => Promise<unknown>> = {
   async typing(peer: string, state: 'start' | 'recording' | 'stop') {
     client.notifyTyping(peer, state);
   },
+  // Historial largo y viejo sin mandarlo por la red: `count` textos, uno por hora hacia atras desde hace `daysAgo` dias
+  async seedHistory(peer: string, count: number, daysAgo: number) {
+    const store = (client as any).store;
+    const newest = Date.now() - daysAgo * 24 * 60 * 60 * 1000;
+    for (let i = 0; i < count; i++) {
+      await store.insertMessage({
+        id: `viejo-${i}`, peer, fromMe: i % 2 === 0, kind: 'text', body: i === count - 1 ? 'el mas viejo de todos' : `historial ${i}`,
+        media: null, mediaFile: null, downloadState: 'none', duration: null, sentAt: newest - i * 60 * 60 * 1000, status: 'sent',
+        selfDestruct: false, ttl: null, expiresAt: null, replyTo: null, editedAt: null, deleted: false, reactions: {},
+        readByMe: true, viewOnce: false, viewed: false,
+      });
+    }
+  },
   async call(method: string, ...args: unknown[]) {
     return (client as any)[method](...args);
   },

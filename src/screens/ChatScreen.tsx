@@ -24,6 +24,7 @@ import { ChatWallpaper } from '../components/chat/ChatWallpaper';
 import { StickerPanel } from '../components/chat/StickerPanel';
 import { SwipeToReply } from '../components/chat/SwipeToReply';
 import { ChatMessage, formatTtl, shortTtl, TIMER_OPTIONS } from '../lib/types';
+import { dayKey, dayLabel } from '../lib/dates';
 import { ContactInfoScreen } from './ContactInfoScreen';
 
 
@@ -48,6 +49,8 @@ type RowProps = {
   uploadPercent: number | undefined;
   pinned: boolean;
   handlers: RowHandlers;
+  // Primer mensaje de su dia: lleva arriba el separador ("Hoy", "Ayer", "12 de octubre")
+  dayLabel: string | null;
 };
 
 // Cada recarga de la base crea objetos nuevos con el mismo contenido: se comparan por valor
@@ -69,8 +72,10 @@ function sameMessage(a: ChatMessage | null, b: ChatMessage | null): boolean {
 // Una fila del chat. Solo se vuelve a dibujar si cambia SU mensaje: antes cualquier cambio (alguien escribiendo,
 // en linea, un porcentaje de subida) redibujaba todo el chat y el scroll se trababa.
 const ChatRow = memo(
-  function ChatRow({ item, quoted, me, peer, epoch, styles, colors, highlighted, uploadPercent, pinned, handlers }: RowProps) {
+  function ChatRow({ item, quoted, me, peer, epoch, styles, colors, highlighted, uploadPercent, pinned, handlers, dayLabel }: RowProps) {
     return (
+      <>
+      {dayLabel && <DaySeparator label={dayLabel} colors={colors} />}
       <SwipeToReply
         enabled={item.kind !== 'system' && !item.deleted}
         iconColor={colors.accent}
@@ -96,6 +101,7 @@ const ChatRow = memo(
           pinned={pinned}
         />
       </SwipeToReply>
+      </>
     );
   },
   (a, b) =>
@@ -109,8 +115,27 @@ const ChatRow = memo(
     a.highlighted === b.highlighted &&
     a.uploadPercent === b.uploadPercent &&
     a.pinned === b.pinned &&
-    a.handlers === b.handlers,
+    a.handlers === b.handlers &&
+    a.dayLabel === b.dayLabel,
 );
+
+function DaySeparator({ label, colors }: { label: string; colors: Colors }) {
+  return (
+    <View style={{ alignItems: 'center', marginVertical: 10 }}>
+      <View style={{ backgroundColor: colors.card, borderColor: colors.border, borderWidth: 1, borderRadius: 10, paddingHorizontal: 12, paddingVertical: 4 }}>
+        <Text style={{ color: colors.textMuted, fontSize: 12, fontWeight: '700' }}>{label}</Text>
+      </View>
+    </View>
+  );
+}
+
+// Separador solo en el primer mensaje de cada dia. La lista va del mas nuevo al mas viejo: el anterior es index + 1.
+function dayLabelAt(list: ChatMessage[], index: number): string | null {
+  const item = list[index];
+  const older = list[index + 1];
+  if (older && dayKey(older.sentAt) === dayKey(item.sentAt)) return null;
+  return dayLabel(item.sentAt);
+}
 
 const retrySend = (id: string) => client.retrySend(id);
 const retryDownload = (id: string) => client.retryDownload(id);
@@ -713,20 +738,36 @@ export function ChatScreen({ state, peer }: { state: ClientState; peer: string }
             maxToRenderPerBatch={8}
             updateCellsBatchingPeriod={40}
             windowSize={9}
-            renderItem={({ item }) => (
-              <ChatRow
-                item={item}
-                quoted={quotedOf(item.replyTo)}
-                me={state.username}
-                peer={peer}
-                epoch={state.cacheEpoch}
-                styles={styles}
-                colors={colors}
-                highlighted={item.id === highlightId}
-                uploadPercent={state.uploadProgress[item.id]}
-                pinned={pinnedIds.has(item.id)}
-                handlers={rowHandlers}
-              />
+            // La lista esta invertida: el "final" es arriba, en los mensajes mas viejos
+            onEndReached={() => !searching && client.loadOlder(peer)}
+            onEndReachedThreshold={0.5}
+            renderItem={({ item, index }) => (
+              <>
+                <ChatRow
+                  item={item}
+                  quoted={quotedOf(item.replyTo)}
+                  me={state.username}
+                  peer={peer}
+                  epoch={state.cacheEpoch}
+                  styles={styles}
+                  colors={colors}
+                  highlighted={item.id === highlightId}
+                  uploadPercent={state.uploadProgress[item.id]}
+                  pinned={pinnedIds.has(item.id)}
+                  handlers={rowHandlers}
+                  dayLabel={dayLabelAt(listData, index)}
+                />
+                {searching && (
+                  <TouchableOpacity
+                    onPress={() => goToQuoted(item.id)}
+                    hitSlop={8}
+                    activeOpacity={0.6}
+                    style={{ alignSelf: item.fromMe ? 'flex-end' : 'flex-start', marginHorizontal: 14, marginBottom: 8 }}
+                  >
+                    <Text style={{ color: colors.accent, fontWeight: '700', fontSize: 13 }}>Ver en el chat ›</Text>
+                  </TouchableOpacity>
+                )}
+              </>
             )}
           />
           {awayFromLatest && !searching && (

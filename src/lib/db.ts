@@ -185,11 +185,13 @@ export class Store {
 
   // Busqueda en todas las conversaciones (solo texto; la base esta cifrada, la busqueda se hace en el telefono).
   // Sin distinguir mayusculas ni acentos: "reunion" encuentra "Reunión" y "manana" encuentra "mañana".
-  async searchAll(query: string, limit = 100): Promise<ChatMessage[]> {
+  // peer: solo en ese chat (la lupa de la conversacion), en todo su historial
+  async searchAll(query: string, limit = 100, peer?: string): Promise<ChatMessage[]> {
     const needle = normalizeForSearch(query);
     if (!needle) return [];
     const candidates = await this.db.getAllAsync<{ id: string; body: string; kind: string; media: string | null }>(
-      "SELECT id, body, kind, media FROM messages WHERE (kind IN ('text', 'file') OR (kind IN ('image', 'video') AND body != '')) AND deleted = 0 ORDER BY sent_at DESC",
+      `SELECT id, body, kind, media FROM messages WHERE (kind IN ('text', 'file') OR (kind IN ('image', 'video') AND body != '')) AND deleted = 0${peer ? ' AND peer = ?' : ''} ORDER BY sent_at DESC`,
+      ...(peer ? [peer] : []),
     );
     // Texto, comentarios de fotos/videos/documentos y el nombre de los documentos
     const fileName = (c: { kind: string; media: string | null }) => {
@@ -245,6 +247,15 @@ export class Store {
   async getFileMessages(peer: string): Promise<ChatMessage[]> {
     const rows = await this.db.getAllAsync<MessageRow>(
       "SELECT * FROM messages WHERE peer = ? AND kind = 'file' AND deleted = 0 ORDER BY sent_at DESC",
+      peer,
+    );
+    return rows.map(rowToMessage);
+  }
+
+  // Fotos y videos del chat (sin "ver una vez"): los mas nuevos primero
+  async getMediaMessages(peer: string): Promise<ChatMessage[]> {
+    const rows = await this.db.getAllAsync<MessageRow>(
+      "SELECT * FROM messages WHERE peer = ? AND kind IN ('image', 'video') AND deleted = 0 AND view_once = 0 ORDER BY sent_at DESC",
       peer,
     );
     return rows.map(rowToMessage);

@@ -4,6 +4,7 @@ import { Alert, ScrollView, Text, TouchableOpacity, View } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { Avatar } from '../components/chat/Avatar';
 import { DocumentsSection } from '../components/chat/DocumentsSection';
+import { MediaSection } from '../components/chat/MediaSection';
 import { useChatTheme } from '../components/chat/useChatTheme';
 import { WallpaperPicker } from '../components/chat/WallpaperPicker';
 import { setWallpaper, useAppearance } from '../lib/appearance';
@@ -21,6 +22,12 @@ export function ContactInfoScreen({ state, peer, onClose }: { state: ClientState
     const timer = setTimeout(() => client.getSafetyNumber(peer).then(setNumber), 50);
     return () => clearTimeout(timer);
   }, [peer, contact?.identity?.signPub, contact?.identity?.dhPub]);
+
+  const goToMessage = (id: string) => {
+    onClose();
+    // Ya en el chat, salta al mensaje y lo resalta
+    setTimeout(() => client.jumpToMessage(id), 150);
+  };
 
   const confirmClear = () => {
     Alert.alert(
@@ -83,17 +90,22 @@ export function ContactInfoScreen({ state, peer, onClose }: { state: ClientState
             )}
           </View>
 
+          <MediaSection
+            peer={peer}
+            epoch={state.cacheEpoch}
+            reloadKey={state.messages}
+            styles={styles}
+            colors={colors}
+            onGoToMessage={goToMessage}
+          />
+
           <DocumentsSection
             peer={peer}
             me={state.username}
             reloadKey={state.messages}
             styles={styles}
             colors={colors}
-            onGoToMessage={(id) => {
-              onClose();
-              // Ya en el chat, salta al mensaje y lo resalta
-              setTimeout(() => client.jumpToMessage(id), 150);
-            }}
+            onGoToMessage={goToMessage}
           />
 
           <Text style={styles.infoSectionTitle}>NÚMERO DE SEGURIDAD</Text>

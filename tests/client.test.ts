@@ -492,6 +492,44 @@ test('vista previa de notificaciones: cifrada con la llave del destinatario, el 
   await Promise.all([a.close(), b.close()]);
 });
 
+test('historial completo: la lupa busca en todos los dias, al subir se cargan los anteriores y fotos y videos en la info', async () => {
+  const [a, b, na, nb] = await pair();
+  // 1200 mensajes de dias pasados (uno por hora desde hace 3 dias) + uno de hoy
+  await b.run('seedHistory', na, 1200, 3);
+  await a.run('sendText', nb, 'hola de hoy');
+  await waitFor('beto recibe el de hoy', () => msgs(b, na), (l) => bodies(l).includes('hola de hoy'));
+  const first = await msgs(b, na);
+  assert.equal(first.length, 500, 'al abrir el chat se cargan los ultimos 500');
+
+  // La lupa del chat busca en todo el historial, sin acentos ni mayusculas
+  const found = await b.run<Msg[]>('call', 'searchMessages', na, 'EL MÁS VIEJO');
+  assert.deepEqual(found.map((m) => m.body), ['el mas viejo de todos'], 'encuentra el mensaje mas viejo');
+  const many = await b.run<Msg[]>('call', 'searchMessages', na, 'historial 11');
+  assert.ok(many.length > 1 && many.every((m, i) => i === 0 || m.sentAt >= many[i - 1].sentAt), 'resultados del mas viejo al mas nuevo');
+
+  // Al llegar arriba se cargan los anteriores, hasta tener todo
+  await b.run('call', 'loadOlder', na);
+  assert.equal((await b.run<any>('call', 'getSnapshot')).messages.length, 1000, 'segunda tanda');
+  await b.run('call', 'loadOlder', na);
+  await b.run('call', 'loadOlder', na);
+  const all = (await b.run<any>('call', 'getSnapshot')).messages as Msg[];
+  assert.equal(all.length, 1201, 'todo el historial');
+  assert.equal(all[0].body, 'el mas viejo de todos', 'empieza en el mas viejo');
+
+  // Saltar a un resultado viejo con el chat recien abierto (solo 500 cargados) lo carga
+  await b.run('open', null);
+  await b.run('open', na);
+  assert.equal(await b.run('call', 'jumpToMessage', found[0].id), true, 'salta al resultado aunque no estuviera cargado');
+
+  // Fotos y videos del chat (sin "ver una vez")
+  await a.run('sendImage', nb);
+  await a.run('sendImage', nb, true);
+  await waitFor('beto recibe las fotos', () => msgs(b, na), (l) => l.filter((m) => m.kind === 'image').length === 2);
+  const media = await b.run<Msg[]>('call', 'listMedia', na);
+  assert.equal(media.length, 1, 'la de ver una vez no aparece');
+  await Promise.all([a.close(), b.close()]);
+});
+
 (async () => {
   const started = await startServer();
   const url = started.url;

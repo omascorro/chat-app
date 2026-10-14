@@ -907,6 +907,21 @@ export class ChatClient {
     if (needed > (this.messageLimit.get(peer) ?? DEFAULT_MESSAGE_LIMIT)) this.messageLimit.set(peer, needed);
   }
 
+  // Al llegar arriba del chat se cargan los 500 anteriores (antes se veian solo los ultimos 500 y no habia mas)
+  private loadingOlder = false;
+  async loadOlder(peer: string) {
+    const loaded = this.state.messages.length;
+    const limit = this.messageLimit.get(peer) ?? DEFAULT_MESSAGE_LIMIT;
+    if (this.loadingOlder || this.state.openPeer !== peer || loaded < limit) return;
+    this.loadingOlder = true;
+    try {
+      this.messageLimit.set(peer, limit + DEFAULT_MESSAGE_LIMIT);
+      await this.reloadMessages(peer);
+    } finally {
+      this.loadingOlder = false;
+    }
+  }
+
   // false si el mensaje ya no existe (borrado solo para mi, chat vaciado o temporal que expiro)
   async jumpToMessage(id: string): Promise<boolean> {
     const peer = this.state.openPeer;
@@ -977,9 +992,9 @@ export class ChatClient {
   async searchMessages(peer: string, query: string): Promise<ChatMessage[]> {
     const store = this.store;
     if (!store) return [];
-    const q = query.trim().toLowerCase();
-    const all = await store.getMessages(peer, 5000);
-    return all.filter((m) => !m.deleted && m.kind !== 'system' && (m.body.toLowerCase().includes(q) || (m.kind === 'file' && (m.media?.name ?? '').toLowerCase().includes(q))));
+    // Todo el historial del chat, sin distinguir mayusculas ni acentos (antes solo los ultimos 5000 mensajes)
+    // Del mas viejo al mas nuevo, como los mensajes del chat
+    return (await store.searchAll(query.trim(), 500, peer)).reverse();
   }
 
   // ---------- recepcion ----------
@@ -1521,6 +1536,10 @@ export class ChatClient {
   // Seccion "Documentos" de un contacto
   async listFiles(peer: string): Promise<ChatMessage[]> {
     return this.store ? this.store.getFileMessages(peer) : [];
+  }
+
+  async listMedia(peer: string): Promise<ChatMessage[]> {
+    return this.store ? this.store.getMediaMessages(peer) : [];
   }
 
   async sendMedia(peer: string, plainUri: string, kind: MediaKind, options: { duration?: number; replyTo?: string | null; viewOnce?: boolean; caption?: string } = {}) {
