@@ -80,7 +80,7 @@ export const SELF_DESTRUCT_MS = 10_000;
 export const PASSWORD_MIN_LENGTH = 8;
 // Limites de tiempo; las pruebas automaticas los acortan
 export const TIMEOUTS = {
-  accept: 20_000, // confirmacion del servidor al mandar un mensaje
+  accept: 12_000, // confirmacion del servidor al mandar un mensaje (normalmente llega en menos de 1 s)
   request: 10_000,
   heartbeat: 25_000,
   ping: 6_000,
@@ -1815,6 +1815,9 @@ export class ChatClient {
     const preview = item.silent ? undefined : await this.buildPreview(store, item.peer, payload).catch(() => undefined);
     const result = await this.sendAndWait(item.id, { type: 'direct-message', to: item.peer, clientId: item.id, envelope: encrypted, silent: item.silent, preview });
     if (result === 'timeout') {
+      // Casi siempre es una conexion muerta (ej. al cambiar de Wi-Fi a datos): se revisa ya en vez de esperar al
+      // chequeo de cada 25 s; si no responde se abre otra y al entrar se vuelve a mandar la cola
+      this.checkConnection();
       await store.setOutboxError(item.id, item.attempts + 1, 'El servidor no confirmó que recibió el mensaje');
       return 'retry';
     }
