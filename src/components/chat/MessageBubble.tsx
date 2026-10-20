@@ -138,14 +138,14 @@ export function MessageBubble({ message: item, quoted, me, peer, epoch, styles, 
     <View style={[{ alignItems: mine ? 'flex-end' : 'flex-start', marginVertical: 3, borderRadius: 16 }, highlighted && styles.highlightedRow]}>
       <TouchableOpacity activeOpacity={0.85} onLongPress={() => onLongPress(item)} delayLongPress={300}>
         {isImageSticker && !quote ? (
-          <EncryptedSticker {...mediaProps} />
+          <EncryptedSticker {...mediaProps} onZoom={onZoom} />
         ) : item.kind === 'sticker' && !item.deleted && !quote ? (
           <Text style={styles.stickerText}>{item.body}</Text>
         ) : (
           <View style={[styles.bubble, mine ? styles.myBubble : styles.theirBubble, isMedia && !quote && styles.imageBubble]}>
             {quote}
             {isImageSticker ? (
-              <EncryptedSticker {...mediaProps} size={110} />
+              <EncryptedSticker {...mediaProps} size={110} onZoom={onZoom} />
             ) : item.kind === 'sticker' && !item.deleted ? (
               <Text style={{ fontSize: 40 }}>{item.body}</Text>
             ) : (

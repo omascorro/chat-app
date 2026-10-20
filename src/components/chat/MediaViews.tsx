@@ -113,7 +113,7 @@ export function EncryptedImage(props: MediaProps & { onZoom: (uri: string, messa
 }
 
 // Sticker: imagen grande, sin burbuja y sin recortar (respeta la transparencia)
-export function EncryptedSticker(props: MediaProps & { size?: number }) {
+export function EncryptedSticker(props: MediaProps & { size?: number; onZoom?: (uri: string, messageId: string) => void }) {
   const { uri, error } = useDecryptedUri(props.message, props.epoch);
   const size = props.size ?? 150;
   if (!uri) {
@@ -129,7 +129,14 @@ export function EncryptedSticker(props: MediaProps & { size?: number }) {
       </View>
     );
   }
-  return <Image source={{ uri }} style={{ width: size, height: size }} resizeMode="contain" />;
+  const image = <Image source={{ uri }} style={{ width: size, height: size }} resizeMode="contain" />;
+  if (!props.onZoom) return image;
+  // Tocarlo lo abre en grande en el visor, como las fotos (algunos stickers se ven muy chicos)
+  return (
+    <TouchableOpacity onPress={() => props.onZoom!(uri, props.message.id)} onLongPress={props.onLongPress} delayLongPress={300} activeOpacity={0.85}>
+      {image}
+    </TouchableOpacity>
+  );
 }
 
 function VideoPlayerView({ uri, style }: { uri: string; style: any }) {
