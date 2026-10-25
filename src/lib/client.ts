@@ -963,6 +963,13 @@ export class ChatClient {
   private async reloadMessages(peer: string) {
     const store = this.store;
     if (!store || this.state.openPeer !== peer) return;
+    // Lo mas viejo que ya se ve se queda cargado aunque lleguen mensajes nuevos: antes cada nuevo sacaba al mas viejo
+    // de la lista, y si estabas leyendo uno viejo (al que saltaste) terminaba desapareciendo
+    const oldest = this.state.messages[0];
+    if (oldest && oldest.peer === peer) {
+      const needed = await store.countFrom(peer, oldest.id);
+      if (needed > (this.messageLimit.get(peer) ?? DEFAULT_MESSAGE_LIMIT)) this.messageLimit.set(peer, needed);
+    }
     const messages = await store.getMessages(peer, this.messageLimit.get(peer) ?? DEFAULT_MESSAGE_LIMIT);
     const pinnedMessages = await this.loadPinnedMessages(store, peer);
     if (this.state.openPeer === peer) this.setState({ messages, pinnedMessages });

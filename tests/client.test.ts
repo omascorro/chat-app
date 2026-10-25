@@ -530,6 +530,19 @@ test('historial completo: la lupa busca en todos los dias, al subir se cargan lo
   await Promise.all([a.close(), b.close()]);
 });
 
+test('leyendo mensajes viejos: los nuevos que llegan no sacan de la lista lo que ya estaba cargado', async () => {
+  const [a, b, na, nb] = await pair();
+  await b.run('seedHistory', na, 600, 2);
+  const before = await msgs(b, na);
+  assert.equal(before.length, 500, 'se abren los ultimos 500');
+  for (let i = 1; i <= 3; i++) await a.run('sendText', nb, `nuevo ${i}`);
+  await waitFor('beto recibe los 3 nuevos', () => b.run<any>('call', 'getSnapshot').then((s) => s.messages as Msg[]), (l) => bodies(l).includes('nuevo 3'));
+  const after = (await b.run<any>('call', 'getSnapshot')).messages as Msg[];
+  assert.equal(after.length, 503, 'los nuevos se suman sin quitar ninguno');
+  assert.equal(after[0].id, before[0].id, 'el mas viejo que se veia sigue ahi');
+  await Promise.all([a.close(), b.close()]);
+});
+
 (async () => {
   const started = await startServer();
   const url = started.url;

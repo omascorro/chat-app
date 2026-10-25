@@ -742,6 +742,9 @@ export function ChatScreen({ state, peer }: { state: ClientState; peer: string }
             maxToRenderPerBatch={8}
             updateCellsBatchingPeriod={40}
             windowSize={9}
+            // Si estas leyendo mas arriba, un mensaje nuevo ya no empuja lo que ves (antes la pantalla se movia sola).
+            // Si estas hasta abajo, la lista sigue bajando para mostrar el nuevo.
+            maintainVisibleContentPosition={{ minIndexForVisible: 0, autoscrollToTopThreshold: 80 }}
             // La lista esta invertida: el "final" es arriba, en los mensajes mas viejos
             onEndReached={() => !searching && client.loadOlder(peer)}
             onEndReachedThreshold={0.5}
