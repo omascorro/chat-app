@@ -498,8 +498,10 @@ test('historial completo: la lupa busca en todos los dias, al subir se cargan lo
   await b.run('seedHistory', na, 1200, 3);
   await a.run('sendText', nb, 'hola de hoy');
   await waitFor('beto recibe el de hoy', () => msgs(b, na), (l) => bodies(l).includes('hola de hoy'));
+  // Se vuelve a entrar al chat: si el mensaje llego con el chat abierto, se sumo sin quitar ninguno (501)
+  await b.run('open', null);
   const first = await msgs(b, na);
-  assert.equal(first.length, 500, 'al abrir el chat se cargan los ultimos 500');
+  assert.equal(first.length, 500, 'al entrar al chat se cargan los ultimos 500');
 
   // La lupa del chat busca en todo el historial, sin acentos ni mayusculas
   const found = await b.run<Msg[]>('call', 'searchMessages', na, 'EL MÁS VIEJO');
@@ -540,6 +542,61 @@ test('leyendo mensajes viejos: los nuevos que llegan no sacan de la lista lo que
   const after = (await b.run<any>('call', 'getSnapshot')).messages as Msg[];
   assert.equal(after.length, 503, 'los nuevos se suman sin quitar ninguno');
   assert.equal(after[0].id, before[0].id, 'el mas viejo que se veia sigue ahi');
+  await Promise.all([a.close(), b.close()]);
+});
+
+test('iniciar sesion: la contraseña equivocada se rechaza, la correcta entra y despues de 10 fallos se bloquea', async () => {
+  const [a, b, , nb] = await pair();
+  await b.run('logout');
+  assert.equal((await b.run<any>('tryLogin', nb, 'clave-equivocada')).authError, 'Usuario o contraseña incorrectos');
+  assert.equal((await b.run<any>('tryLogin', 'nadie-con-este-nombre', 'clave-segura-2')).authError, 'Usuario o contraseña incorrectos', 'mismo aviso si el usuario no existe');
+  const ok = await b.run<any>('tryLogin', nb, 'clave-segura-2');
+  assert.deepEqual(ok, { phase: 'ready', authError: '' }, 'la correcta entra');
+  // 10 fallos seguidos bloquean la cuenta un rato, aunque despues pongan la correcta
+  await b.run('logout');
+  for (let i = 0; i < 9; i++) await b.run('tryLogin', nb, `mala-${i}`);
+  const blocked = await b.run<any>('tryLogin', nb, 'clave-segura-2');
+  assert.match(blocked.authError, /Demasiados intentos/, 'bloqueada tras 10 fallos');
+  await Promise.all([a.close(), b.close()]);
+});
+
+test('recuperar contraseña: con el codigo se cambia, se cierran las sesiones abiertas y la vieja ya no sirve', async () => {
+  counter++;
+  const nb = `rita${counter}`;
+  const b = new Device(nb, serverUrl);
+  const c = new Device(`${nb}-otro`, serverUrl);
+  await Promise.all([b.ready, c.ready]);
+  await Promise.all([b.run('boot'), c.run('boot')]);
+  const code = await b.run<string>('register', nb, 'clave-vieja-1');
+  assert.match(code, /^[0-9A-F]{12}$/, 'el codigo de recuperacion se muestra al registrarse');
+  // Desde otro telefono: codigo equivocado, y despues el correcto
+  assert.match((await c.run<any>('resetPassword', nb, '000000000000', 'clave-nueva-1')).authError, /incorrectos/);
+  assert.match((await c.run<any>('resetPassword', nb, code, 'clave-nueva-1')).authInfo, /Contraseña actualizada/);
+  // La sesion que estaba abierta se cierra sola
+  const closed = await waitFor('el telefono con la sesion vieja sale', () => b.run<any>('call', 'getSnapshot'), (s) => s.phase === 'loggedOut');
+  assert.match(closed.authError, /sesión se cerró/);
+  assert.equal((await c.run<any>('tryLogin', nb, 'clave-vieja-1')).authError, 'Usuario o contraseña incorrectos', 'la vieja ya no sirve');
+  assert.equal((await c.run<any>('tryLogin', nb, 'clave-nueva-1')).phase, 'ready', 'la nueva si');
+  await Promise.all([b.close(), c.close()]);
+});
+
+test('notificaciones al cambiar de cuenta en el mismo telefono: solo le llegan las de la cuenta abierta', async () => {
+  const [a, b, , nb] = await pair();
+  await b.run('allowPush', true);
+  await b.run('dropConnection');
+  await waitFor('beto reconecta', () => b.run<any>('state'), (s) => s.connected);
+  await sleep(500);
+  // En el mismo telefono se sale de beto SIN conexion (el servidor nunca se entera) y se crea otra cuenta
+  await b.run('offline', true);
+  await b.run('call', 'logout');
+  await b.run('offline', false);
+  await b.run('register', `${nb}-nueva`, 'clave-segura-3');
+  await sleep(500);
+  const before = pushes.length;
+  await a.run('sendText', nb, 'esto es para beto');
+  await waitFor('ana ve su mensaje enviado', () => msgs(a, nb), (l) => l.some((m) => m.body === 'esto es para beto' && m.status !== 'pending'));
+  await sleep(800);
+  assert.ok(!pushes.slice(before).some((p) => p.to === `ExponentPushToken[${nb}]`), 'el telefono ya no recibe avisos de la cuenta que cerro');
   await Promise.all([a.close(), b.close()]);
 });
 

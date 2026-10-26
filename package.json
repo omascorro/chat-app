@@ -60,7 +60,7 @@
     "ios": "expo start --ios",
     "web": "expo start --web",
     "lint": "expo lint",
-    "test": "npx --yes tsx tests/crypto.test.ts",
+    "test": "npx --yes tsx tests/crypto.test.ts && npx --yes tsx tests/utils.test.ts",
     "update": "npx --yes eas-cli@latest update --channel preview --environment preview --message",
     "test:client": "tsx tests/client.test.ts",
     "test:all": "npm test && npm run test:client"

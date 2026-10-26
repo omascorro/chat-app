@@ -1,4 +1,4 @@
-import { normalizeForSearch } from './db';
+import { normalizeForSearch } from './text';
 
 // Donde aparece `query` dentro de `text`, sin distinguir mayusculas ni acentos (igual que la busqueda):
 // "reunion" marca "Reunión". Devuelve [inicio, fin) en el texto original, todas las veces que aparece.
@@ -12,6 +12,8 @@ export function findMatches(text: string, query: string): [number, number][] {
   for (const ch of text) {
     const n = ch.normalize('NFD').replace(/[̀-ͯ]/g, '').toLowerCase();
     for (let k = 0; k < n.length; k++) from.push([i, i + ch.length]);
+    // Un acento escrito aparte (e + ´) no deja letra: se pega a la letra anterior para que la marca lo incluya
+    if (n.length === 0 && from.length > 0) from[from.length - 1][1] = i + ch.length;
     normalized += n;
     i += ch.length;
   }

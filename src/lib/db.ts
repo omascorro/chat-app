@@ -2,6 +2,7 @@ import * as SQLite from 'expo-sqlite';
 import { SessionRecord } from './crypto/sessions';
 import { PublicIdentity } from './crypto/x3dh';
 import { userKey } from './keystore';
+import { normalizeForSearch } from './text';
 import { ChatMessage, MediaRef } from './types';
 
 const SCHEMA = `
@@ -58,9 +59,7 @@ async function addMissingColumns(db: SQLite.SQLiteDatabase, table: string, colum
   }
 }
 
-export function normalizeForSearch(text: string): string {
-  return text.normalize('NFD').replace(/[̀-ͯ]/g, '').toLowerCase().trim();
-}
+export { normalizeForSearch };
 
 export function databaseName(username: string): string {
   return `aeterna_${userKey(username)}.db`;

@@ -436,7 +436,7 @@ export class ChatClient {
       const { spks } = await ensureSignedPreKey(username, identity);
       const spk = spks[spks.length - 1];
       this.pendingAuthUser = username;
-      this.send({
+      const sent = this.send({
         type: mode,
         v: PROTOCOL_VERSION,
         username,
@@ -444,6 +444,8 @@ export class ChatClient {
         identity: publicIdentity(identity),
         spk: { id: spk.id, pub: spk.pub, sig: spk.sig },
       });
+      // Si la conexion se cayo justo ahora, avisar; antes la ruedita se quedaba girando para siempre
+      if (!sent) this.setState({ authBusy: false, authError: 'Sin conexion con el servidor, espera un momento' });
     } catch (e) {
       log('Error preparando las llaves:', e);
       this.setState({ authBusy: false, authError: 'No se pudieron preparar las llaves de cifrado' });
@@ -889,6 +891,9 @@ export class ChatClient {
   // jumpTo: abrir el chat en un mensaje concreto (resultado de busqueda o mensaje fijado)
   async openConversation(peer: string | null, jumpTo: string | null = null) {
     const samePeer = peer === this.state.openPeer;
+    // Al entrar a un chat se cargan de nuevo los ultimos 500: si antes se leyo historial viejo, el limite habia crecido
+    // y cada mensaje nuevo recargaba miles de filas de la base
+    if (peer && !samePeer) this.messageLimit.delete(peer);
     this.setState({ openPeer: peer, messages: samePeer ? this.state.messages : [], pinnedMessages: samePeer ? this.state.pinnedMessages : [], jumpTo: null });
     if (!peer) return;
     if (jumpTo) await this.ensureLoaded(peer, jumpTo);

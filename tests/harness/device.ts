@@ -31,11 +31,33 @@ const commands: Record<string, (...args: any[]) => Promise<unknown>> = {
     await client.boot();
     await until(() => client.getSnapshot().connected, 8000, 'conexion');
   },
+  // Devuelve el codigo de recuperacion que la app le muestra al usuario
   async register(username: string, password: string) {
     await client.authenticate('register', username, password);
     await until(() => client.getSnapshot().phase === 'recovery' || !!client.getSnapshot().authError, 8000, 'registro');
     if (client.getSnapshot().authError) throw new Error(client.getSnapshot().authError);
+    const code = client.getSnapshot().recoveryCode;
     client.confirmRecoveryCode();
+    return code;
+  },
+  // Cerrar sesion y esperar a que la app vuelva a conectar (el servidor corta la conexion al salir)
+  async logout() {
+    await client.logout();
+    await sleep(400);
+    await until(() => client.getSnapshot().connected, 8000, 'reconexion despues de cerrar sesion');
+  },
+  // Intento de inicio de sesion que puede fallar: devuelve como quedo la pantalla en vez de lanzar error
+  async tryLogin(username: string, password: string) {
+    await client.authenticate('login', username, password);
+    await until(() => !client.getSnapshot().authBusy, 8000, 'respuesta del login');
+    const s = client.getSnapshot();
+    return { phase: s.phase, authError: s.authError };
+  },
+  async resetPassword(username: string, code: string, newPassword: string) {
+    client.resetPassword(username, code, newPassword);
+    await until(() => !client.getSnapshot().authBusy, 8000, 'respuesta de recuperar contraseña');
+    const s = client.getSnapshot();
+    return { authError: s.authError, authInfo: s.authInfo };
   },
   async addContact(username: string) {
     return client.addContact(username);
@@ -272,6 +294,13 @@ process.on('message', async (msg: { id: number; cmd: string; args: unknown[] }) 
   } catch (e) {
     process.send!({ id: msg.id, ok: false, error: String((e as Error)?.stack ?? e) });
   }
+});
+
+// Si el proceso de las pruebas se cae (una prueba que falla a la mitad no llega a cerrar sus telefonos), este
+// telefono se cierra solo; si no, se quedaba corriendo en segundo plano con su conexion y sus timers
+process.on('disconnect', () => {
+  cleanup();
+  process.exit(0);
 });
 
 process.send!({ ready: true });
