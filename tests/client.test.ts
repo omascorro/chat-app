@@ -600,6 +600,24 @@ test('notificaciones al cambiar de cuenta en el mismo telefono: solo le llegan l
   await Promise.all([a.close(), b.close()]);
 });
 
+test('borrar para mi un mensaje que todavia no sale (🕓) cancela el envio: el otro nunca lo recibe', async () => {
+  const [a, b, na, nb] = await pair();
+  await a.run('offline', true);
+  await a.run('sendText', nb, 'mejor no lo mando');
+  await a.run('sendImage', nb);
+  await a.run('sendText', nb, 'este si');
+  const pending = (await msgs(a, nb)).filter((m) => m.status === 'pending');
+  assert.equal(pending.length, 3, 'los tres esperan conexion');
+  for (const m of pending.filter((m) => m.body !== 'este si')) await a.run('call', 'deleteForMe', m.id);
+  await a.run('offline', false);
+  await waitFor('beto recibe el que si', () => msgs(b, na), (l) => bodies(l).includes('este si'));
+  await sleep(800);
+  const got = await msgs(b, na);
+  assert.deepEqual(bodies(got), ['este si'], 'ni el texto ni la foto borrados llegan');
+  assert.equal((await a.run<any>('diagnostics')).outbox.length, 0, 'la cola de salida quedo vacia');
+  await Promise.all([a.close(), b.close()]);
+});
+
 (async () => {
   const started = await startServer();
   const url = started.url;

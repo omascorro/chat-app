@@ -1596,6 +1596,8 @@ export class ChatClient {
     const store = this.store;
     const target = store ? await store.getMessage(id) : null;
     if (!store || !target) return;
+    // Si todavia no salia (🕓), borrarlo cancela el envio, como en WhatsApp: antes un texto se mandaba de todos modos
+    if (target.fromMe && target.status === 'pending') await store.deleteOutbox(id);
     await this.deleteLocalCopy(store, target, false);
     await this.reloadMessages(target.peer);
   }
