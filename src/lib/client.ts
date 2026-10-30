@@ -194,6 +194,8 @@ export class ChatClient {
   private serverMyPicture: string | null = null; // como la guarda el servidor (cifrada o, antes, sin cifrar)
   private migratingPicture = false;
   private appState: AppStateStatus = AppState.currentState;
+  // Con la pantalla de bloqueo (huella / Face ID) encima, el chat abierto no se esta viendo
+  private locked = false;
   private pushRegistered = false;
   private pushToken: string | null = null;
   private askedPushPermission = false;
@@ -991,9 +993,16 @@ export class ChatClient {
     await this.refreshContacts();
   }
 
+  // Lo llama AppLock: al volver a la app se marcaba leido el chat abierto aunque siguiera bloqueada
+  setLocked(locked: boolean) {
+    if (this.locked === locked) return;
+    this.locked = locked;
+    if (!locked && this.state.openPeer) this.markConversationRead(this.state.openPeer);
+  }
+
   private async markConversationRead(peer: string) {
     const store = this.store;
-    if (!store || this.appState === 'background' || this.appState === 'inactive') return;
+    if (!store || this.locked || this.appState === 'background' || this.appState === 'inactive') return;
     const ids = await store.markRead(peer, SELF_DESTRUCT_MS);
     if (ids.length > 0) {
       await this.queuePayload(peer, { t: 'read', ids }, true);

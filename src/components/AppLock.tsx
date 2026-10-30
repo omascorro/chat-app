@@ -1,6 +1,7 @@
 import * as LocalAuthentication from 'expo-local-authentication';
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { AppState, Text, TouchableOpacity, View } from 'react-native';
+import { client } from '../lib/client';
 import { getAppLockEnabled } from '../lib/keystore';
 import { ChatStyles } from './chat/useChatTheme';
 
@@ -21,7 +22,10 @@ export function AppLock({ active, styles }: { active: boolean; styles: ChatStyle
     setChecking(true);
     try {
       const result = await LocalAuthentication.authenticateAsync({ promptMessage: 'Desbloquear Aeterna', cancelLabel: 'Cancelar' });
-      if (result.success) setLocked(false);
+      if (result.success) {
+        setLocked(false);
+        client.setLocked(false);
+      }
     } finally {
       setChecking(false);
     }
@@ -30,23 +34,32 @@ export function AppLock({ active, styles }: { active: boolean; styles: ChatStyle
   const lockIfNeeded = useCallback(async () => {
     if (await lockAvailable()) {
       setLocked(true);
+      client.setLocked(true);
       unlock();
+    } else {
+      client.setLocked(false);
     }
   }, [unlock]);
 
   useEffect(() => {
     if (!active) {
       setLocked(false);
+      client.setLocked(false);
       return;
     }
     lockIfNeeded();
     const sub = AppState.addEventListener('change', (next) => {
       if (next === 'background') {
         backgroundSince.current = Date.now();
+        // Desde que sale de la app no se marca nada como leido; al volver se decide si se pide huella / Face ID
+        lockAvailable().then((enabled) => {
+          if (enabled && backgroundSince.current !== null) client.setLocked(true);
+        });
       } else if (next === 'active' && backgroundSince.current !== null) {
         const away = Date.now() - backgroundSince.current;
         backgroundSince.current = null;
         if (away > RELOCK_AFTER_MS) lockIfNeeded();
+        else client.setLocked(false);
       }
     });
     return () => sub.remove();

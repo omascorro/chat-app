@@ -319,6 +319,50 @@ test('notificaciones: con la app en segundo plano llega el aviso, y la prueba de
   await Promise.all([a.close(), b.close()]);
 });
 
+test('con la app bloqueada (huella / Face ID) el chat abierto no marca leido hasta desbloquear', async () => {
+  const [a, b, na, nb] = await pair();
+  await b.run('open', na);
+  await b.run('call', 'setLocked', true);
+  await a.run('sendText', nb, 'me ves?');
+  await waitFor('beto lo recibe', () => msgs(b, na), (l) => l.some((m) => m.body === 'me ves?'));
+  await sleep(800);
+  const mine = async () => (await msgs(a, nb)).find((m) => m.body === 'me ves?')!;
+  assert.notEqual((await mine()).status, 'read', 'bloqueada no cuenta como leido');
+  await b.run('call', 'setLocked', false);
+  await waitFor('al desbloquear se marca leido', mine, (m) => m.status === 'read');
+  await Promise.all([a.close(), b.close()]);
+});
+
+test('notificaciones: si la conexion de la app abierta muere antes de confirmar un mensaje, igual llega el aviso', async () => {
+  const [a, b, na, nb] = await pair();
+  await b.run('allowPush', true);
+  await b.run('dropConnection');
+  await waitFor('beto reconecta', () => b.run<any>('state'), (s) => s.connected);
+  await sleep(500);
+  const toBeto = (from: number) => pushes.slice(from).filter((p) => p.to === `ExponentPushToken[${nb}]`);
+  // Mensaje confirmado y despues se corta: no hace falta aviso
+  let before = pushes.length;
+  await a.run('sendText', nb, 'uno');
+  await waitFor('beto recibe uno', () => msgs(b, na), (l) => l.some((m) => m.body === 'uno'));
+  await sleep(300);
+  await b.run('offline', true);
+  await sleep(500);
+  assert.equal(toBeto(before).length, 0, 'sin aviso si el telefono ya lo habia guardado');
+  await b.run('offline', false);
+  await sleep(300);
+  // La conexion muere sin que el telefono confirme (perdio la senal): antes no llegaba ningun aviso
+  await b.run('dropAcks', true);
+  before = pushes.length;
+  await a.run('sendText', nb, 'dos');
+  await waitFor('el mensaje llega por la conexion', () => msgs(b, na), (l) => l.some((m) => m.body === 'dos'));
+  assert.equal(toBeto(before).length, 0, 'con la app abierta no se manda aviso');
+  await b.run('offline', true);
+  await waitFor('aviso al cerrarse la conexion', async () => toBeto(before), (l) => l.length === 1);
+  await b.run('dropAcks', false);
+  await b.run('offline', false);
+  await Promise.all([a.close(), b.close()]);
+});
+
 test('responder a una foto: la cita lleva al mensaje original, y si ya no existe lo dice', async () => {
   const [a, b, na, nb] = await pair();
   await a.run('sendImage', nb);
