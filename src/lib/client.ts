@@ -87,6 +87,8 @@ export const TIMEOUTS = {
   item: 60_000, // un envio completo de la cola
   retry: 15_000, // reintento de la cola
   reconnect: 2_000,
+  // Tras este tiempo en segundo plano la conexion ya esta muerta (el servidor la corta a los ~20 s sin respuesta)
+  staleAfterBackground: 20_000,
 };
 const MAX_UPLOAD_ATTEMPTS = 5;
 const MAX_DOWNLOAD_ATTEMPTS = 3;
@@ -196,6 +198,7 @@ export class ChatClient {
   private appState: AppStateStatus = AppState.currentState;
   // Con la pantalla de bloqueo (huella / Face ID) encima, el chat abierto no se esta viendo
   private locked = false;
+  private backgroundSince: number | null = null;
   private pushRegistered = false;
   private pushToken: string | null = null;
   private askedPushPermission = false;
@@ -255,6 +258,7 @@ export class ChatClient {
     const previous = this.appState;
     this.appState = next;
     if (next === 'background') {
+      if (previous !== 'background') this.backgroundSince = Date.now();
       // Lo descifrado para verse no se queda en disco mientras la app no esta en uso
       wipeCache().catch(() => {});
       // Asi el servidor manda notificacion aunque la conexion siga viva un rato con el telefono bloqueado
@@ -265,7 +269,12 @@ export class ChatClient {
       this.setState({ cacheEpoch: this.state.cacheEpoch + 1 });
       // En iPhone la app pasa por "inactive" muy seguido (Face ID, selector de fotos, centro de notificaciones).
       // Reconectar cada vez perdia las confirmaciones del servidor; ahora solo se reconecta si la conexion no responde.
-      this.checkConnection();
+      // Despues de un rato en segundo plano se abre otra de una vez: un mensaje escrito al volver se iba por la conexion
+      // muerta, esperaba ~18 s a darse cuenta y si se cerraba la app antes, no salia hasta volver a abrirla.
+      const away = this.backgroundSince === null ? 0 : Date.now() - this.backgroundSince;
+      this.backgroundSince = null;
+      if (away > TIMEOUTS.staleAfterBackground) this.connect();
+      else this.checkConnection();
       if (this.state.openPeer) this.markConversationRead(this.state.openPeer);
       this.retryPushRegistration();
     }

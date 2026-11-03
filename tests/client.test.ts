@@ -308,6 +308,9 @@ test('notificaciones: con la app en segundo plano llega el aviso, y la prueba de
   const push = pushes.slice(before).find((p) => p.to === `ExponentPushToken[${nb}]`);
   assert.ok(!JSON.stringify(push).includes('hola'), 'la notificacion no lleva el mensaje legible');
   await b.run('background', false);
+  // Despues de un rato en segundo plano la app abre otra conexion
+  await waitFor('beto reconecta', () => b.run<any>('state'), (s) => s.connected);
+  await sleep(300);
   // Prueba desde Ajustes
   await b.run('call', 'testPushNotifications', 0);
   const s = await waitFor('resultado de la prueba', () => b.run<any>('state'), (st) => /^✅/.test(st.pushTest ?? ''), 15000);
@@ -316,6 +319,22 @@ test('notificaciones: con la app en segundo plano llega el aviso, y la prueba de
   await a.run('call', 'testPushNotifications', 0);
   const sa = await a.run<any>('state');
   assert.match(sa.pushTest, /desactivadas/);
+  await Promise.all([a.close(), b.close()]);
+});
+
+test('al volver de segundo plano con la conexion muerta, el mensaje sale de inmediato (no tras esperar la confirmacion)', async () => {
+  const [a, b, na, nb] = await pair();
+  // Confirmacion lenta como en un telefono real, para que la diferencia se note
+  await a.run('timeouts', { accept: 5000 });
+  await a.run('background', true);
+  await a.run('zombie');
+  await sleep(600);
+  await a.run('background', false);
+  const start = Date.now();
+  await a.run('sendText', nb, 'ya volvi');
+  await waitFor('beto lo recibe', () => msgs(b, na), (l) => l.some((m) => m.body === 'ya volvi'));
+  // Antes: 5 s esperando la confirmacion + 0.8 s de ping antes de reconectar
+  assert.ok(Date.now() - start < 3000, `tardo ${Date.now() - start} ms`);
   await Promise.all([a.close(), b.close()]);
 });
 

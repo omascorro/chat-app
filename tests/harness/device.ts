@@ -8,7 +8,7 @@ const { ChatClient, TIMEOUTS } = require('../../src/lib/client') as typeof impor
 const { MEDIA_TIMEOUTS } = require('../../src/lib/media') as typeof import('../../src/lib/media');
 
 // Tiempos cortos para que las pruebas no tarden minutos
-Object.assign(TIMEOUTS, { accept: 1500, request: 1500, heartbeat: 60_000, ping: 800, item: 5000, retry: 400, reconnect: 150 });
+Object.assign(TIMEOUTS, { accept: 1500, request: 1500, heartbeat: 60_000, ping: 800, item: 5000, retry: 400, reconnect: 150, staleAfterBackground: 300 });
 Object.assign(MEDIA_TIMEOUTS, { upload: 1500, download: 3000 });
 
 const client = new ChatClient();
@@ -101,6 +101,15 @@ const commands: Record<string, (...args: any[]) => Promise<unknown>> = {
   // Corta la conexion de golpe, como cuando el telefono pierde la red
   async dropConnection() {
     (client as any).ws?.terminate?.();
+  },
+  // Conexion muerta sin aviso (iPhone suspendido): la app la sigue viendo abierta pero nada pasa por ella
+  async timeouts(values: Partial<typeof TIMEOUTS>) {
+    Object.assign(TIMEOUTS, values);
+  },
+  async zombie() {
+    const ws = (client as any).ws;
+    ws.send = () => {};
+    ws.onmessage = null;
   },
   // Sin conexion de verdad: corta el socket y no deja que reconecte hasta volver
   async offline(on: boolean) {
