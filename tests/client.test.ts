@@ -338,6 +338,24 @@ test('al volver de segundo plano con la conexion muerta, el mensaje sale de inme
   await Promise.all([a.close(), b.close()]);
 });
 
+test('salir de la app con un mensaje en reloj: se manda de una vez por una conexion nueva (en Android los reintentos se congelan)', async () => {
+  const [a, b, na, nb] = await pair();
+  // Confirmacion y reconexion lentas: en un Android en segundo plano esos temporizadores no corren
+  await a.run('timeouts', { accept: 8000, reconnect: 8000 });
+  await a.run('zombie');
+  await a.run('sendText', nb, 'me sali');
+  await sleep(300);
+  assert.equal((await msgs(a, nb)).find((m) => m.body === 'me sali')!.status, 'pending', 'sigue con el reloj');
+  const start = Date.now();
+  await a.run('background', true);
+  await waitFor('beto lo recibe', () => msgs(b, na), (l) => l.some((m) => m.body === 'me sali'));
+  assert.ok(Date.now() - start < 3000, `tardo ${Date.now() - start} ms`);
+  await waitFor('ana lo ve enviado', () => msgs(a, nb), (l) => ['sent', 'read'].includes(l.find((m) => m.body === 'me sali')!.status));
+  assert.equal((await msgs(b, na)).filter((m) => m.body === 'me sali').length, 1, 'llega una sola vez');
+  await a.run('background', false);
+  await Promise.all([a.close(), b.close()]);
+});
+
 test('con la app bloqueada (huella / Face ID) el chat abierto no marca leido hasta desbloquear', async () => {
   const [a, b, na, nb] = await pair();
   await b.run('open', na);

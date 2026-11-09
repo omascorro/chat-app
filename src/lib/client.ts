@@ -263,6 +263,10 @@ export class ChatClient {
       wipeCache().catch(() => {});
       // Asi el servidor manda notificacion aunque la conexion siga viva un rato con el telefono bloqueado
       this.sendPresence();
+      if (previous !== 'background') {
+        this.backgroundReconnects = 0;
+        this.sendPendingInBackground();
+      }
     }
     if (next === 'active' && previous !== 'active') this.sendPresence();
     if (/inactive|background/.test(previous) && next === 'active') {
@@ -278,6 +282,21 @@ export class ChatClient {
       if (this.state.openPeer) this.markConversationRead(this.state.openPeer);
       this.retryPushRegistration();
     }
+  }
+
+  // En Android, con la app en segundo plano se congelan los temporizadores (esperar la confirmacion, reconectar,
+  // reintentar) pero la red sigue funcionando un rato. Un mensaje que no habia salido al salir de la app se quedaba
+  // con el reloj hasta volver a entrar. Ahora se abre una conexion nueva de una vez y la cola sale con ella.
+  private backgroundReconnects = 0;
+  private async sendPendingInBackground() {
+    const store = this.store;
+    if (!store || !this.token || this.appState !== 'background' || this.backgroundReconnects >= 3) return;
+    if ((await store.listOutbox()).length === 0 || this.appState !== 'background') return;
+    this.backgroundReconnects++;
+    log('Mensajes pendientes con la app en segundo plano: se mandan por una conexion nueva');
+    // Lo que esperaba confirmacion por la conexion vieja se vuelve a mandar (el otro telefono ignora repetidos)
+    this.failPendingSends();
+    this.connect();
   }
 
   private checkingConnection = false;
@@ -358,6 +377,8 @@ export class ChatClient {
       if (this.state.authBusy) this.setState({ authError: 'Se perdió la conexión con el servidor. Intenta de nuevo.' });
       this.setState({ connected: false, authBusy: false });
       this.failPendingSends();
+      // En segundo plano el temporizador de abajo no corre en Android hasta volver a la app
+      if (this.appState === 'background') this.sendPendingInBackground();
       this.reconnectTimer = setTimeout(() => {
         this.reconnectTimer = null;
         this.connect();
@@ -1686,6 +1707,11 @@ export class ChatClient {
       retryLater = true;
     } finally {
       this.flushing = false;
+    }
+    // Si mientras tanto entro una conexion nueva, se intenta ya con ella (en segundo plano el reintento no corre)
+    if (retryLater && this.flushAgain && this.authed) {
+      this.flush();
+      return;
     }
     if (retryLater) this.scheduleRetry();
   }
