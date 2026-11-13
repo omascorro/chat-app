@@ -77,6 +77,7 @@ export async function startServer(): Promise<{ url: string; storage: Map<string,
   // 'pg' -> pg-mem (con traducciones para lo que pg-mem no soporta)
   const { newDb } = require('pg-mem');
   const db = newDb();
+  serverDb = db;
   db.public.registerFunction({ name: 'now', returns: 'timestamp', implementation: () => new Date(), impure: true });
   const adapter = db.adapters.createPg();
   class Pool extends adapter.Pool {
@@ -130,6 +131,8 @@ export async function startServer(): Promise<{ url: string; storage: Map<string,
 
 // Notificaciones que el servidor le pidio a Expo enviar
 export const pushes: any[] = [];
+// Base de datos del servidor de pruebas (para revisar el registro de entregas)
+export let serverDb: any = null;
 
 export class Device {
   private proc: ChildProcess;

@@ -1,7 +1,7 @@
 // Pruebas de la app completa: dos telefonos (procesos con el ChatClient real) hablando por el servidor real.
 // Uso: npm run test:client   (necesita la carpeta chat-backend al lado de chat-app, o AETERNA_BACKEND_DIR)
 import assert from 'node:assert/strict';
-import { deletedObjects, Device, pushes, startServer, waitFor } from './harness/world';
+import { deletedObjects, Device, pushes, serverDb, startServer, waitFor } from './harness/world';
 
 type Msg = {
   id: string; fromMe: boolean; kind: string; body: string; status: string; deleted: boolean; editedAt: number | null;
@@ -335,6 +335,38 @@ test('al volver de segundo plano con la conexion muerta, el mensaje sale de inme
   await waitFor('beto lo recibe', () => msgs(b, na), (l) => l.some((m) => m.body === 'ya volvi'));
   // Antes: 5 s esperando la confirmacion + 0.8 s de ping antes de reconectar
   assert.ok(Date.now() - start < 3000, `tardo ${Date.now() - start} ms`);
+  await Promise.all([a.close(), b.close()]);
+});
+
+test('registro de entregas: el servidor anota cuando se escribio, en que estado estaba el otro, el aviso y la confirmacion', async () => {
+  const [a, b, na, nb] = await pair();
+  const row = (body: string) => async () => {
+    const ids = serverDb.public.many(`SELECT * FROM delivery_log WHERE from_username = '${na}' AND to_username = '${nb}' ORDER BY inbox_id`);
+    return ids[ids.length - 1] ?? null;
+  };
+  // Con la app abierta: sin aviso, confirmado al momento
+  await a.run('sendText', nb, 'abierta');
+  await waitFor('beto lo recibe', () => msgs(b, na), (l) => l.some((m) => m.body === 'abierta'));
+  const open = await waitFor('anotado y confirmado', row('abierta'), (r) => !!r?.acked_at);
+  assert.equal(open.recipient_state, 'app abierta');
+  assert.equal(open.push_at, null, 'sin aviso con la app abierta');
+  assert.ok(open.queued_at, 'la app manda cuando se escribio');
+  assert.equal(open.sender_background, false);
+  // En segundo plano: el aviso queda anotado con su resultado
+  await b.run('allowPush', true);
+  await b.run('dropConnection');
+  await waitFor('beto reconecta', () => b.run<any>('state'), (s) => s.connected);
+  await sleep(500);
+  await b.run('background', true);
+  await sleep(300);
+  const first = (await row('')())?.inbox_id;
+  await a.run('sendText', nb, 'dormido');
+  const bg = await waitFor('aviso anotado', row('dormido'), (r) => r && r.inbox_id !== first && r.push_result === 'ok');
+  assert.equal(bg.recipient_state, 'segundo plano');
+  assert.ok(bg.push_at);
+  // Los avisos de lectura y reacciones (silenciosos) no se anotan
+  assert.ok(serverDb.public.many(`SELECT * FROM delivery_log WHERE from_username = '${nb}'`).length === 0, 'nada silencioso');
+  await b.run('background', false);
   await Promise.all([a.close(), b.close()]);
 });
 

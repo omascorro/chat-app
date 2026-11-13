@@ -1871,7 +1871,11 @@ export class ChatClient {
 
     // 3. Mandar y esperar la confirmacion del servidor
     const preview = item.silent ? undefined : await this.buildPreview(store, item.peer, payload).catch(() => undefined);
-    const result = await this.sendAndWait(item.id, { type: 'direct-message', to: item.peer, clientId: item.id, envelope: encrypted, silent: item.silent, preview });
+    // queuedAt / attempts / background: solo para el registro de entregas del servidor (saber donde se retraso uno)
+    const result = await this.sendAndWait(item.id, {
+      type: 'direct-message', to: item.peer, clientId: item.id, envelope: encrypted, silent: item.silent, preview,
+      queuedAt: item.createdAt, attempts: item.attempts, background: this.appState === 'background',
+    });
     if (result === 'timeout') {
       // Casi siempre es una conexion muerta (ej. al cambiar de Wi-Fi a datos): se revisa ya en vez de esperar al
       // chequeo de cada 25 s; si no responde se abre otra y al entrar se vuelve a mandar la cola
