@@ -25,6 +25,15 @@ let lastCheck = 0;
 let checking = false;
 let offeredUpdateId: string | null = null;
 
+function offerRestart(id: string) {
+  if (offeredUpdateId === id) return;
+  offeredUpdateId = id;
+  Alert.alert('Actualización lista', 'Se descargó una versión nueva de la app. ¿Reiniciar ahora para usarla?', [
+    { text: 'Después', style: 'cancel' },
+    { text: 'Reiniciar', onPress: () => restartWithUpdate().catch((e) => log('No se pudo reiniciar:', e)) },
+  ]);
+}
+
 async function checkAndOffer() {
   if (!Updates.isEnabled || checking || Date.now() - lastCheck < MIN_CHECK_INTERVAL_MS) return;
   checking = true;
@@ -34,14 +43,11 @@ async function checkAndOffer() {
     if (!check.isAvailable) return;
     const fetched = await Updates.fetchUpdateAsync();
     const id = fetched.manifest && 'id' in fetched.manifest ? String(fetched.manifest.id) : 'nueva';
-    if (!fetched.isNew || offeredUpdateId === id) return;
-    offeredUpdateId = id;
-    Alert.alert('Actualización lista', 'Se descargó una versión nueva de la app. ¿Reiniciar ahora para usarla?', [
-      { text: 'Después', style: 'cancel' },
-      { text: 'Reiniciar', onPress: () => restartWithUpdate().catch((e) => log('No se pudo reiniciar:', e)) },
-    ]);
+    if (fetched.isNew) offerRestart(id);
   } catch (e) {
-    // Sin conexion o sin actualizaciones publicadas: se vuelve a intentar mas tarde
+    // Sin conexion, o choco con la descarga que el telefono hace solo al abrir la app: antes se esperaban 10 min
+    // para volver a buscar; ahora se intenta otra vez la proxima vez que se vuelva a la app
+    lastCheck = 0;
     log('No se pudo buscar actualizaciones:', e);
   } finally {
     checking = false;
@@ -49,6 +55,12 @@ async function checkAndOffer() {
 }
 
 export function useAutoUpdates() {
+  // El telefono descarga solo la version nueva al abrir la app; antes eso no avisaba y se aplicaba hasta cerrarla
+  const { isUpdatePending, downloadedUpdate } = Updates.useUpdates();
+  useEffect(() => {
+    if (isUpdatePending) offerRestart(downloadedUpdate?.updateId ?? 'nueva');
+  }, [isUpdatePending, downloadedUpdate?.updateId]);
+
   useEffect(() => {
     checkAndOffer();
     const sub = AppState.addEventListener('change', (next) => {
