@@ -338,6 +338,58 @@ test('al volver de segundo plano con la conexion muerta, el mensaje sale de inme
   await Promise.all([a.close(), b.close()]);
 });
 
+test('reintento sin confirmacion: el servidor no guarda, entrega ni avisa una segunda copia', async () => {
+  const [a, b, na, nb] = await pair();
+  await a.run('sendText', nb, 'hola');
+  await waitFor('beto recibe hola', () => msgs(b, na), (l) => l.some((m) => m.body === 'hola'));
+  await a.run('dropAccepted', 1);
+  await a.run('sendText', nb, 'una vez');
+  await waitFor('ana lo ve enviado tras reintentar', () => msgs(a, nb), (l) => l.some((m) => m.body === 'una vez' && m.status !== 'pending'));
+  await a.run('dropAccepted', 1);
+  await a.run('setTimer', nb, 3600);
+  await waitFor('beto ve el cambio de temporizador', () => msgs(b, na), (l) => l.some((m) => m.kind === 'system' && /temporales/.test(m.body)));
+  await sleep(2500); // tiempo de sobra para que llegara una copia repetida
+  const logged = serverDb.public.many(`SELECT * FROM delivery_log WHERE from_username = '${na}'`);
+  assert.equal(logged.filter((r: any) => r.recipient_state).length, 2, 'una sola entrega por mensaje (hola y una vez)');
+  const timerNotes = (await msgs(b, na)).filter((m) => m.kind === 'system' && /temporales/.test(m.body));
+  assert.equal(timerNotes.length, 1, 'el aviso del temporizador no se repite');
+  assert.equal((await msgs(b, na)).filter((m) => m.body === 'una vez').length, 1);
+  await Promise.all([a.close(), b.close()]);
+});
+
+test('si falla guardar un mensaje recibido, no se pierde: el servidor lo vuelve a entregar', async () => {
+  const [a, b, na, nb] = await pair();
+  await b.run('failStore', 'insertMessage', 1);
+  await a.run('sendText', nb, 'no se pierde');
+  await sleep(1000);
+  assert.ok(!(await msgs(b, na)).some((m) => m.body === 'no se pierde'), 'todavia no se guardo');
+  await b.run('dropConnection');
+  const l = await waitFor('llega al reconectar', () => msgs(b, na), (x) => x.some((m) => m.body === 'no se pierde'));
+  assert.equal(l.filter((m) => m.body === 'no se pierde').length, 1, 'una sola vez');
+  assert.ok(!l.some((m) => m.kind === 'system' && /descifrar/.test(m.body)), 'no aparece "no se pudo descifrar"');
+  await Promise.all([a.close(), b.close()]);
+});
+
+test('si el servidor pide reintentar la sesion mas tarde, la app reintenta sola y los envios salen', async () => {
+  const [a, b, na, nb] = await pair();
+  await b.run('retryLaterOnNextResume');
+  await b.run('dropConnection');
+  await sleep(500);
+  await b.run('sendText', na, 'despues del bloqueo');
+  await waitFor('ana lo recibe', () => msgs(a, nb), (l) => l.some((m) => m.body === 'despues del bloqueo'));
+  await Promise.all([a.close(), b.close()]);
+});
+
+test('abrir un chat con mas de 500 sin leer: todos quedan como leidos en el otro telefono', async () => {
+  const [a, b, na, nb] = await pair();
+  await a.run('seedConversation', nb, 510, true);
+  await b.run('seedConversation', na, 510, false);
+  await b.run('open', na);
+  const readCount = async () => (await a.run<any>('call', 'getMessagesByIds', nb, Array.from({ length: 510 }, (_, i) => `lote-${i}`))).filter((m: any) => m.status === 'read').length;
+  await waitFor('los 510 en leido', readCount, (n) => n === 510, 15000);
+  await Promise.all([a.close(), b.close()]);
+});
+
 test('registro de entregas: el servidor anota cuando se escribio, en que estado estaba el otro, el aviso y la confirmacion', async () => {
   const [a, b, na, nb] = await pair();
   const row = (body: string) => async () => {

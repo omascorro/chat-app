@@ -8,7 +8,7 @@ const { ChatClient, TIMEOUTS } = require('../../src/lib/client') as typeof impor
 const { MEDIA_TIMEOUTS } = require('../../src/lib/media') as typeof import('../../src/lib/media');
 
 // Tiempos cortos para que las pruebas no tarden minutos
-Object.assign(TIMEOUTS, { accept: 1500, request: 1500, heartbeat: 60_000, ping: 800, item: 5000, retry: 400, reconnect: 150, staleAfterBackground: 300 });
+Object.assign(TIMEOUTS, { accept: 1500, request: 1500, heartbeat: 60_000, ping: 800, item: 5000, retry: 400, reconnect: 150, staleAfterBackground: 300, resumeRetry: 200 });
 Object.assign(MEDIA_TIMEOUTS, { upload: 1500, download: 3000 });
 
 const client = new ChatClient();
@@ -102,10 +102,60 @@ const commands: Record<string, (...args: any[]) => Promise<unknown>> = {
   async dropConnection() {
     (client as any).ws?.terminate?.();
   },
-  // Conexion muerta sin aviso (iPhone suspendido): la app la sigue viendo abierta pero nada pasa por ella
   async timeouts(values: Partial<typeof TIMEOUTS>) {
     Object.assign(TIMEOUTS, values);
   },
+  // Se pierden las siguientes n confirmaciones del servidor ("accepted"): el telefono cree que no salio y reintenta
+  async dropAccepted(n: number) {
+    const c = client as any;
+    const original = c.handleServerMessage.bind(c);
+    let left = n;
+    c.handleServerMessage = (data: any) => {
+      if (data?.type === 'accepted' && left > 0) {
+        left--;
+        return;
+      }
+      return original(data);
+    };
+  },
+  // La base de datos del telefono falla las siguientes n veces en ese metodo (ej. disco lleno)
+  async failStore(method: string, n: number) {
+    const store = (client as any).store;
+    const original = store[method].bind(store);
+    let left = n;
+    store[method] = (...args: unknown[]) => {
+      if (left > 0) {
+        left--;
+        return Promise.reject(new Error('Fallo simulado de la base de datos'));
+      }
+      return original(...args);
+    };
+  },
+  // El servidor pide reintentar la sesion mas tarde (bloqueo temporal por intentos desde la misma red)
+  async retryLaterOnNextResume() {
+    const c = client as any;
+    const original = c.handleServerMessage.bind(c);
+    let pending = true;
+    c.handleServerMessage = (data: any) => {
+      if (pending && data?.type === 'resume-result' && data.success) {
+        pending = false;
+        return original({ type: 'resume-result', success: false, retryLater: true, error: 'Demasiados intentos' });
+      }
+      return original(data);
+    };
+  },
+  // Mensajes sin leer (o mios ya enviados) con los mismos ids en los dos telefonos, sin pasar por el servidor
+  async seedConversation(peer: string, count: number, fromMe: boolean) {
+    const store = (client as any).store;
+    for (let i = 0; i < count; i++) {
+      await store.insertMessage({
+        id: `lote-${i}`, peer, fromMe, kind: 'text', body: `mensaje ${i}`, media: null, mediaFile: null, downloadState: 'none',
+        duration: null, sentAt: Date.now() - (count - i) * 1000, status: 'sent', selfDestruct: false, ttl: null, expiresAt: null,
+        replyTo: null, editedAt: null, deleted: false, reactions: {}, readByMe: fromMe, viewOnce: false, viewed: false,
+      });
+    }
+  },
+  // Conexion muerta sin aviso (iPhone suspendido): la app la sigue viendo abierta pero nada pasa por ella
   async zombie() {
     const ws = (client as any).ws;
     ws.send = () => {};

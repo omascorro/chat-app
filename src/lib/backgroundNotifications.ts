@@ -76,11 +76,14 @@ TaskManager.defineTask(PREVIEW_TASK, async ({ data, error }) => {
   });
 });
 
-export async function registerBackgroundNotifications() {
-  if (Platform.OS !== 'android') return;
+// true si este telefono puede mostrar los avisos que llegan solo con datos. En Android, sin la tarea registrada no se
+// veria ningun aviso: entonces se le pide al servidor el aviso normal (sin vista previa). Se reintenta la proxima vez.
+export async function registerBackgroundNotifications(): Promise<boolean> {
+  if (Platform.OS !== 'android') return true;
   try {
     await Notifications.registerTaskAsync(PREVIEW_TASK);
+    return true;
   } catch {
-    // sin la tarea, el servidor igual manda los datos; se reintentara la proxima vez
+    return false;
   }
 }

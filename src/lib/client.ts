@@ -89,12 +89,14 @@ export const TIMEOUTS = {
   reconnect: 2_000,
   // Tras este tiempo en segundo plano la conexion ya esta muerta (el servidor la corta a los ~20 s sin respuesta)
   staleAfterBackground: 20_000,
+  resumeRetry: 30_000, // primera espera si el servidor pide reintentar la sesion mas tarde
 };
 const MAX_UPLOAD_ATTEMPTS = 5;
 const MAX_DOWNLOAD_ATTEMPTS = 3;
 const MAX_TEXT_LENGTH = 20_000;
 const MAX_TTL_SECONDS = 7 * 24 * 60 * 60;
 const DEFAULT_MESSAGE_LIMIT = 500;
+const READ_RECEIPT_BATCH = 500; // el que recibe el aviso de lectura ignora lo que pase de 500
 const MAX_PINS = 3;
 const TYPING_VISIBLE_MS = 6_000;
 const TYPING_RESEND_MS = 3_000;
@@ -199,6 +201,8 @@ export class ChatClient {
   // Con la pantalla de bloqueo (huella / Face ID) encima, el chat abierto no se esta viendo
   private locked = false;
   private backgroundSince: number | null = null;
+  private resumeRetries = 0;
+  private previewTaskReady = true;
   private pushRegistered = false;
   private pushToken: string | null = null;
   private askedPushPermission = false;
@@ -563,7 +567,7 @@ export class ChatClient {
   private async registerForPushNotifications() {
     this.pushRegistered = true;
     try {
-      await registerBackgroundNotifications();
+      this.previewTaskReady = await registerBackgroundNotifications();
       if (Platform.OS === 'android') {
         await ensureMessagesChannel();
         // Canal viejo: solo lo usa el aviso generico ("Tienes un mensaje nuevo"), que no muestra contenido
@@ -608,7 +612,7 @@ export class ChatClient {
   // platform y previews: el servidor manda la vista previa cifrada en el formato que este telefono sabe mostrar
   private sendPushToken() {
     if (!this.pushToken || !this.authed) return;
-    this.send({ type: 'register-push-token', token: this.pushToken, platform: Platform.OS, previews: true });
+    this.send({ type: 'register-push-token', token: this.pushToken, platform: Platform.OS, previews: this.previewTaskReady });
   }
 
   // Ajustes > Probar notificaciones: revisa permisos y token aqui, y el servidor manda un aviso a los pocos segundos
@@ -671,11 +675,22 @@ export class ChatClient {
         return;
       case 'resume-result':
         if (data.success) {
+          this.resumeRetries = 0;
           this.storeReady.promise.then(() => this.onAuthenticated());
         } else if (data.updateRequired) {
           this.setState({ updateRequired: true, authError: data.error });
         } else if (!data.retryLater) {
           this.resetToLoggedOut('Tu sesión se cerró. Vuelve a iniciar sesión.');
+        } else {
+          // Bloqueo temporal del servidor (demasiados intentos desde esta red): antes la conexion se quedaba abierta
+          // sin sesion para siempre y los mensajes con el reloj. Se vuelve a intentar, cada vez mas espaciado.
+          const wait = Math.min(TIMEOUTS.resumeRetry * 2 ** this.resumeRetries, TIMEOUTS.resumeRetry * 16);
+          this.resumeRetries++;
+          if (this.reconnectTimer) clearTimeout(this.reconnectTimer);
+          this.reconnectTimer = setTimeout(() => {
+            this.reconnectTimer = null;
+            this.connect();
+          }, wait);
         }
         return;
       case 'user-list':
@@ -1035,7 +1050,10 @@ export class ChatClient {
     if (!store || this.locked || this.appState === 'background' || this.appState === 'inactive') return;
     const ids = await store.markRead(peer, SELF_DESTRUCT_MS);
     if (ids.length > 0) {
-      await this.queuePayload(peer, { t: 'read', ids }, true);
+      // En lotes de 500: el otro telefono solo procesa 500 por aviso y el resto se quedaba sin palomitas azules
+      for (let i = 0; i < ids.length; i += READ_RECEIPT_BATCH) {
+        await this.queuePayload(peer, { t: 'read', ids: ids.slice(i, i + READ_RECEIPT_BATCH) }, true);
+      }
       await this.afterChange(peer);
     }
   }
@@ -1060,12 +1078,17 @@ export class ChatClient {
 
     const identity = this.identity;
     let payload: Payload | null = null;
+    // Si falla el guardado (no el descifrado) no se confirma: el servidor conserva el mensaje y lo reentrega al
+    // reconectar. Antes cualquier error contaba como "no se pudo descifrar" y el servidor borraba su copia.
+    let step = 'crypto' as 'crypto' | 'storage';
     try {
       const header = parseHeader(envelope.h);
       if (header.pk) await this.noteIdentityFromPreKey(store, from, header.pk);
       // Todo bajo el mismo candado: si el envio leyera la sesion entre descifrar y guardar, reusaria una llave
       await this.withLock(from, async () => {
+        step = 'storage';
         const record = await store.getSessions(from);
+        step = 'crypto';
         const result = decryptWithRecord(record, envelope, (pk) => {
           const spk = this.spks.find((s) => s.id === pk.spkId);
           if (!spk) throw new Error('Prekey desconocida');
@@ -1076,12 +1099,19 @@ export class ChatClient {
         } catch {
           log('Contenido invalido de', from);
         }
-        // Orden importante: primero se guarda el contenido (es idempotente) y despues la sesion.
-        // Si la app se cierra a la mitad, la reentrega vuelve a descifrar con la sesion anterior.
+        step = 'storage';
+        // Orden importante: primero se guarda el contenido (es idempotente), despues se anota como recibido y al final
+        // la sesion. Si algo falla a la mitad, la reentrega vuelve a descifrar con la sesion anterior; si ya estaba
+        // anotado, solo se confirma (descifrar otra vez con la sesion nueva fallaria).
         if (payload) await this.applyPayload(store, from, payload);
+        await store.markSeen(inboxId);
         await store.saveSessions(from, result.record);
       });
     } catch (e) {
+      if (step === 'storage') {
+        log('No se pudo guardar un mensaje de', from, '- se queda en el servidor para reentregarlo', e);
+        return;
+      }
       log('No se pudo descifrar un mensaje de', from, e);
       await this.addSystemMessage(from, 'No se pudo descifrar un mensaje. Si pasa seguido, reinicia la sesión cifrada desde la información del contacto.');
       await store.markSeen(inboxId);
@@ -1090,7 +1120,6 @@ export class ChatClient {
       return;
     }
 
-    await store.markSeen(inboxId);
     this.seenInbox.add(inboxId);
     this.send({ type: 'ack', ids: [inboxId] });
     await this.afterChange(from);
@@ -1694,9 +1723,10 @@ export class ChatClient {
             result = 'retry';
           }
           if (result === 'blocked') blocked.add(item.peer);
+          // Solo se detiene ese chat (para no desordenar sus mensajes); antes un envio sin confirmar frenaba a todos
           if (result === 'retry') {
             retryLater = true;
-            break;
+            blocked.add(item.peer);
           }
         }
         if (blocked.size > 0) retryLater = true;
