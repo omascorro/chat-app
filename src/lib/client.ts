@@ -74,6 +74,7 @@ import { prepareStickerImage, stickerIdFor } from './stickers';
 import { decryptPicture, isEncryptedPicture, newProfileKey } from './profilePhoto';
 import { migrateLegacyData } from './migrate';
 import { ChatMessage, Contact, formatTtl, MediaKind, MediaRef, Payload } from './types';
+import { MAX_REACTION_LENGTH } from './reactions';
 
 const PROTOCOL_VERSION = 2;
 export const SELF_DESTRUCT_MS = 10_000;
@@ -1218,7 +1219,7 @@ export class ChatClient {
       if (!target.fromMe) await this.deleteLocalCopy(store, target, true);
     } else if (p.t === 'reaction') {
       const reactions = { ...target.reactions };
-      if (typeof p.emoji === 'string' && p.emoji.length > 0 && p.emoji.length <= 8) reactions[from] = p.emoji;
+      if (typeof p.emoji === 'string' && p.emoji.length > 0 && p.emoji.length <= MAX_REACTION_LENGTH) reactions[from] = p.emoji;
       else delete reactions[from];
       await store.setReactions(target.id, reactions);
     } else if (p.t === 'pin') {

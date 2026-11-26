@@ -1,7 +1,8 @@
-// Pruebas de funciones puras de la app (sin servidor ni telefonos): resaltado de la lupa y separadores de dia
+// Pruebas de funciones puras de la app (sin servidor ni telefonos): resaltado de la lupa, separadores de dia y emojis
 import assert from 'node:assert/strict';
 import { dayKey, dayLabel } from '../src/lib/dates';
 import { findMatches, splitByMatches } from '../src/lib/highlight';
+import { MAX_REACTION_LENGTH, QUICK_REACTIONS, REACTION_GROUPS } from '../src/lib/reactions';
 import { normalizeForSearch } from '../src/lib/text';
 
 let passed = 0;
@@ -59,6 +60,17 @@ test('separadores de dia: minutos antes y despues de medianoche', () => {
 test('dayKey: misma clave para el mismo dia, distinta a medianoche', () => {
   assert.equal(dayKey(new Date(2026, 9, 26, 0, 0).getTime()), dayKey(new Date(2026, 9, 26, 23, 59).getTime()));
   assert.notEqual(dayKey(new Date(2026, 9, 26, 23, 59).getTime()), dayKey(new Date(2026, 9, 27, 0, 0).getTime()));
+});
+
+test('emojis para reaccionar: todos los acepta el otro telefono, sin repetidos y con mas de 150 para elegir', () => {
+  const all = REACTION_GROUPS.flatMap((g) => g.emojis);
+  for (const emoji of [...QUICK_REACTIONS, ...all]) {
+    assert.ok(emoji.length > 0 && emoji.length <= MAX_REACTION_LENGTH, `${emoji} es demasiado largo y el otro telefono lo ignoraria`);
+    assert.ok(!/[‍]|\uD83C[\uDFFB-\uDFFF]/.test(emoji), `${emoji} es un emoji compuesto (puede verse partido)`);
+  }
+  for (const g of REACTION_GROUPS) assert.equal(new Set(g.emojis).size, g.emojis.length, `repetidos en ${g.title}`);
+  assert.ok(new Set(all).size >= 150, `solo hay ${new Set(all).size}`);
+  for (const q of QUICK_REACTIONS) assert.ok(all.includes(q), `${q} tambien debe estar en las categorias`);
 });
 
 console.log(`\n${passed} pruebas pasaron`);
