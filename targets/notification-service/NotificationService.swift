@@ -4,13 +4,16 @@ import Security
 import UserNotifications
 
 // Aeterna: el servidor manda la notificacion generica ("Tienes un mensaje nuevo") con la vista previa cifrada en
-// los datos. Esta extension la descifra con la llave de este iPhone y cambia el titulo y el texto.
+// los datos. Esta extension la descifra con la llave que este iPhone le dio a ese contacto y cambia el titulo y el texto.
 // Si cualquier cosa falla, se muestra la notificacion generica tal cual: nunca se pierde el aviso.
 //
-// Tiene que coincidir con src/lib/preview.ts:
+// Tiene que coincidir con src/lib/preview.ts (version 2, una llave por contacto):
 //  - llavero: servicio "aeterna.preview:no-auth" (expo-secure-store agrega ":no-auth"), grupo compartido
-//  - datos: "pnk" (llave de 32 bytes en base64) y "preview_on" ("off" = no mostrar contenido)
-//  - cifrado: ChaCha20-Poly1305, base64(nonce 12 | cifrado | tag 16), contenido JSON {"f": remitente, "b": texto}
+//  - datos: "pnk2_<id>" = JSON {"k": llave de 32 bytes en base64, "f": nombre del contacto} y "preview_on"
+//  - formato: base64(0x02 | id 8 bytes | nonce 12 | cifrado | tag 16), ChaCha20-Poly1305 con dato asociado
+//    "aeterna-preview-v2:<id en hex>", contenido JSON {"b": texto}
+//  - el titulo es el nombre guardado junto a la llave, nunca lo que diga el contenido
+// El formato viejo (llave unica "pnk") ya no se descifra: se queda el aviso generico.
 class NotificationService: UNNotificationServiceExtension {
   private let accessGroup = "RMX9T6ZVA9.com.mascorro55.chatapp.shared"
   private let keychainService = "aeterna.preview:no-auth"
@@ -31,9 +34,7 @@ class NotificationService: UNNotificationServiceExtension {
 
     if previewsEnabled(),
        let sealed = previewField(content.userInfo),
-       let keyString = readKeychain("pnk"),
-       let key = Data(base64Encoded: keyString), key.count == 32,
-       let preview = decrypt(sealed, key: key) {
+       let preview = open(sealed) {
       content.title = preview.from
       content.body = preview.text
     }
@@ -85,18 +86,33 @@ class NotificationService: UNNotificationServiceExtension {
     let text: String
   }
 
-  private struct Payload: Decodable {
+  private struct StoredKey: Decodable {
+    let k: String
     let f: String
+  }
+
+  private struct Payload: Decodable {
     let b: String
   }
 
-  private func decrypt(_ sealedBase64: String, key: Data) -> Preview? {
-    guard let combined = Data(base64Encoded: sealedBase64), combined.count > 28,
+  private func open(_ sealedBase64: String) -> Preview? {
+    let kidLength = 8
+    guard let bytes = Data(base64Encoded: sealedBase64), bytes.count > 1 + kidLength + 12 + 16,
+          bytes[bytes.startIndex] == 0x02 else {
+      return nil
+    }
+    let kidBytes = bytes.subdata(in: (bytes.startIndex + 1)..<(bytes.startIndex + 1 + kidLength))
+    let kid = kidBytes.map { String(format: "%02x", $0) }.joined()
+    let combined = bytes.subdata(in: (bytes.startIndex + 1 + kidLength)..<bytes.endIndex)
+    guard let stored = readKeychain("pnk2_\(kid)"),
+          let storedData = stored.data(using: .utf8),
+          let entry = try? JSONDecoder().decode(StoredKey.self, from: storedData),
+          let key = Data(base64Encoded: entry.k), key.count == 32,
           let box = try? ChaChaPoly.SealedBox(combined: combined),
-          let plain = try? ChaChaPoly.open(box, using: SymmetricKey(data: key)),
+          let plain = try? ChaChaPoly.open(box, using: SymmetricKey(data: key), authenticating: Data("aeterna-preview-v2:\(kid)".utf8)),
           let payload = try? JSONDecoder().decode(Payload.self, from: plain) else {
       return nil
     }
-    return Preview(from: String(payload.f.prefix(60)), text: String(payload.b.prefix(200)))
+    return Preview(from: String(entry.f.prefix(60)), text: String(payload.b.prefix(200)))
   }
 }
