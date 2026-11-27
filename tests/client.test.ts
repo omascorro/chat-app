@@ -514,11 +514,66 @@ test('respaldo cifrado: guarda texto y fotos, se restaura igual y rechaza una co
   await a.run('call', 'deleteForMe', text.id);
   await a.run('call', 'deleteForMe', photo.id);
   await assert.rejects(a.run('call', 'importBackup', uri, 'otra-contraseña-mala'), /Contraseña incorrecta/);
-  const restored = await a.run<number>('call', 'importBackup', uri, 'respaldo-muy-seguro');
+  const { restored } = await a.run<{ restored: number }>('call', 'importBackup', uri, 'respaldo-muy-seguro');
   assert.equal(restored, 2, 'se restauran los 2 mensajes');
   const after = await msgs(a, nb);
   assert.ok(after.some((m) => m.id === text.id && m.body === 'mi contraseña secreta es 1234'), 'vuelve el texto');
   assert.equal(await a.run('decryptMedia', nb, photo.id), await a.run('testPng'), 'y la foto, identica');
+  await Promise.all([a.close(), b.close()]);
+});
+
+// Arma un respaldo cifrado como exportBackup (PBKDF2-SHA512 + secretbox) con el contenido que se le de
+function makeBackup(password: string, content: unknown): string {
+  const crypto = require('node:crypto') as typeof import('node:crypto');
+  const nacl = require('tweetnacl') as typeof import('tweetnacl');
+  const salt = crypto.randomBytes(16);
+  const nonce = crypto.randomBytes(24);
+  const key = crypto.pbkdf2Sync(password, salt, 1000, 32, 'sha512');
+  const data = nacl.secretbox(Buffer.from(JSON.stringify(content), 'utf8'), nonce, key);
+  const b64 = (x: Uint8Array) => Buffer.from(x).toString('base64');
+  return JSON.stringify({ format: 'aeterna-backup', v: 1, salt: b64(salt), iterations: 1000, nonce: b64(nonce), data: b64(data) });
+}
+
+test('respaldo restaurado dos veces o alterado: no pisa archivos, no duplica y rechaza entradas invalidas', async () => {
+  const [a, b, na, nb] = await pair();
+  await a.run('sendText', nb, 'texto del respaldo');
+  await a.run('sendImage', nb);
+  const sent = await waitFor('salen', () => msgs(a, nb), (l) => l.filter((m) => m.status !== 'pending' && m.kind !== 'system').length === 2);
+  const photo = sent.find((m) => m.kind === 'image')!;
+  const uri = await a.run<string>('call', 'exportBackup', 'respaldo-muy-seguro', true);
+  const filesBefore = await a.run<string[]>('mediaDirFiles');
+  // Sin borrar nada: todo ya esta, no se restaura ni se escribe nada nuevo, y la foto sigue abriendo igual
+  assert.deepEqual(await a.run('call', 'importBackup', uri, 'respaldo-muy-seguro'), { restored: 0, skipped: 0 });
+  assert.deepEqual((await a.run<string[]>('mediaDirFiles')).sort(), filesBefore.sort(), 'no se pisan ni agregan archivos');
+  assert.equal(await a.run('decryptMedia', nb, photo.id), await a.run('testPng'));
+  assert.equal((await msgs(a, nb)).filter((m) => m.kind === 'image').length, 1, 'sin duplicados');
+
+  // Respaldo alterado (misma contraseña): ids con ruta, adjuntos sin llave, temporales y basura; uno solo es valido
+  const key = Buffer.alloc(32, 1).toString('base64');
+  const good = { id: 'bueno1', peer: nb, fromMe: true, kind: 'text', body: 'valido', media: null, sentAt: Date.now() - 1000, status: 'sent', reactions: {} };
+  const tampered = makeBackup('respaldo-muy-seguro', {
+    username: na,
+    exportedAt: Date.now(),
+    messages: [
+      good,
+      { ...good, id: '../../fuera', body: 'id con ruta' },
+      { ...good, id: 'malo2', kind: 'image', media: { bucket: 'videos', key, nonce: 'x', path: 'a'.repeat(32) + '.bin' } },
+      { ...good, id: 'malo3', selfDestruct: true },
+      { ...good, id: 'malo4', peer: 'con\nsalto' },
+      'basura',
+      null,
+    ],
+    media: { '../../fuera': 'AAAA', bueno1: 'no-es-un-archivo-valido' },
+  });
+  const tamperedUri = await a.run<string>('writeTestFile', 'alterado.aeb', tampered);
+  assert.deepEqual(await a.run('call', 'importBackup', tamperedUri, 'respaldo-muy-seguro'), { restored: 1, skipped: 6 });
+  const l = await msgs(a, nb);
+  assert.ok(l.some((m) => m.id === 'bueno1' && m.body === 'valido'));
+  assert.ok(!l.some((m) => /ruta|malo/.test(m.id + m.body)));
+  assert.equal(await a.run('appFileExists', '../fuera.enc'), false);
+  // Estructura invalida: no es un respaldo
+  const notBackup = await a.run<string>('writeTestFile', 'raro.aeb', JSON.stringify({ format: 'aeterna-backup', v: 1, salt: 1, nonce: 'x', data: 'y', iterations: 1000 }));
+  await assert.rejects(a.run('call', 'importBackup', notBackup, 'respaldo-muy-seguro'), /no es un respaldo/);
   await Promise.all([a.close(), b.close()]);
 });
 
@@ -628,32 +683,200 @@ test('vaciar chat: solo en mi telefono, o para los dos (con fotos y fijados)', a
   await Promise.all([a.close(), b.close()]);
 });
 
-// Descifra una vista previa con ChaCha20-Poly1305 estandar (el mismo que usa CryptoKit en la extension del iPhone)
-function openPreview(keyB64: string, data: string): { f: string; b: string } {
+// Descifra una vista previa v2 con ChaCha20-Poly1305 estandar (el mismo que usa CryptoKit en la extension del iPhone):
+// 0x02 | id 8 bytes | nonce 12 | cifrado | tag 16, con "aeterna-preview-v2:<id>" como dato asociado
+function openPreviewV2(keyB64: string, data: string): { kid: string; b: string } {
   const crypto = require('node:crypto') as typeof import('node:crypto');
   const raw = Buffer.from(data, 'base64');
-  const d = crypto.createDecipheriv('chacha20-poly1305', Buffer.from(keyB64, 'base64'), raw.subarray(0, 12), { authTagLength: 16 });
+  assert.equal(raw[0], 2, 'formato v2');
+  const kid = raw.subarray(1, 9).toString('hex');
+  const d = crypto.createDecipheriv('chacha20-poly1305', Buffer.from(keyB64, 'base64'), raw.subarray(9, 21), { authTagLength: 16 });
+  d.setAAD(Buffer.from(`aeterna-preview-v2:${kid}`, 'utf8'), { plaintextLength: raw.length - 21 - 16 });
   d.setAuthTag(raw.subarray(raw.length - 16));
-  return JSON.parse(Buffer.concat([d.update(raw.subarray(12, raw.length - 16)), d.final()]).toString('utf8'));
+  return { kid, ...JSON.parse(Buffer.concat([d.update(raw.subarray(21, raw.length - 16)), d.final()]).toString('utf8')) };
 }
 
-test('vista previa de notificaciones: cifrada con la llave del destinatario, el servidor no la puede leer', async () => {
+// La vista previa como la arma la version 1 (una llave para todos los contactos y el remitente dentro del contenido)
+function legacyPreview(keyB64: string, preview: { f: string; b: string }): string {
+  const crypto = require('node:crypto') as typeof import('node:crypto');
+  const nonce = crypto.randomBytes(12);
+  const c = crypto.createCipheriv('chacha20-poly1305', Buffer.from(keyB64, 'base64'), nonce, { authTagLength: 16 });
+  const body = Buffer.concat([c.update(JSON.stringify(preview), 'utf8'), c.final()]);
+  return Buffer.concat([nonce, body, c.getAuthTag()]).toString('base64');
+}
+
+test('vista previa de notificaciones: una llave por contacto, el titulo sale del llavero y el servidor no la puede leer', async () => {
   const [a, b, na, nb] = await pair();
-  await b.run('sendText', na, 'hola ana'); // al escribir, beto le comparte su llave de vista previa
+  // Un tercero que tambien es contacto de beto
+  counter++;
+  const nc = `carla${counter}`;
+  const c = new Device(nc, serverUrl);
+  await c.ready;
+  await c.run('boot');
+  await c.run('register', nc, 'clave-segura-3');
+  assert.ok((await c.run('addContact', nb)).success);
+  await b.run('waitContact', nc);
+  await b.run('sendText', na, 'hola ana');
+  await b.run('sendText', nc, 'hola carla');
   await waitFor('ana recibe', () => msgs(a, nb), (l) => count(l, 'hola ana') === 1);
-  const bKey = await b.run<string>('deviceKey');
-  assert.ok(bKey, 'beto tiene llave de vista previa');
+  await waitFor('carla recibe', () => msgs(c, nb), (l) => count(l, 'hola carla') === 1);
+  // Cada contacto de beto recibe una llave distinta (con id distinto)
+  const forA = JSON.parse((await waitFor('ana tiene la llave de beto', () => a.run<string | null>('kv', `peer_nk2:${nb}`), (v) => !!v))!);
+  const forC = JSON.parse((await waitFor('carla tiene la llave de beto', () => c.run<string | null>('kv', `peer_nk2:${nb}`), (v) => !!v))!);
+  assert.notEqual(forA.kid, forC.kid, 'ids distintos');
+  assert.notEqual(forA.key, forC.key, 'llaves distintas');
+  assert.equal(await b.run('deviceKey'), null, 'la llave unica de la version 1 ya no existe');
+
   await a.run('spySends');
   await a.run('sendText', nb, 'nos vemos a las 8');
   const sent = await waitFor('ana manda con vista previa', () => a.run<any[]>('sentMessages'), (l) => l.some((m) => m.preview));
   const withPreview = sent.find((m) => m.preview)!;
-  assert.deepEqual(openPreview(bKey!, withPreview.preview), { f: na, b: 'nos vemos a las 8' });
+  assert.deepEqual(openPreviewV2(forA.key, withPreview.preview), { kid: forA.kid, b: 'nos vemos a las 8' });
   assert.ok(!JSON.stringify(withPreview).includes('nos vemos'), 'el texto no viaja en claro');
+  assert.deepEqual(await b.run('openPreview', withPreview.preview), { f: na, b: 'nos vemos a las 8' }, 'beto ve que es de ana');
+  // Carla no puede abrir lo que ana le manda a beto con su propia llave, ni hacerse pasar por ana
+  assert.throws(() => openPreviewV2(forC.key, withPreview.preview), 'la llave de carla no abre la de ana');
+  const forged = withPreview.preview.slice(0, 4) + (withPreview.preview[4] === 'A' ? 'B' : 'A') + withPreview.preview.slice(5);
+  assert.equal(await b.run('openPreview', forged), null, 'alterada: aviso generico');
+  // Formato viejo (llave compartida, remitente dentro del contenido): aviso generico
+  assert.equal(await b.run('openPreview', legacyPreview(forA.key, { f: na, b: 'viejo' })), null);
+
   await a.run('setTimer', nb, 30);
   await a.run('sendText', nb, 'esto es temporal');
   const again = await waitFor('manda el temporal', () => a.run<any[]>('sentMessages'), (l) => l.filter((m) => m.preview).length >= 2);
   const last = again.filter((m) => m.preview).pop()!;
-  assert.equal(openPreview(bKey!, last.preview).b, '⏱ Mensaje temporal', 'los temporales no muestran contenido');
+  assert.equal(openPreviewV2(forA.key, last.preview).b, '⏱ Mensaje temporal', 'los temporales no muestran contenido');
+
+  // Retiro: al quitar a ana, su llave se borra del llavero de beto y lo que llegue con ella se ve generico
+  await b.run('call', 'removeContact', na);
+  await waitFor('llave retirada', () => b.run('secureItem', `pnk2_${forA.kid}`), (v) => v === null);
+  assert.equal(await b.run('openPreview', withPreview.preview), null);
+  await Promise.all([a.close(), b.close(), c.close()]);
+});
+
+test('identidad distinta a la fijada: el mensaje se retiene sin aplicarse ni sustituir la sesion hasta aceptarla', async () => {
+  const [a, b, na, nb] = await pair();
+  await a.run('sendText', nb, 'antes');
+  await waitFor('llega', () => msgs(b, na), (l) => count(l, 'antes') === 1);
+  await b.run('sendText', na, 'respuesta');
+  await waitFor('llega la respuesta', () => msgs(a, nb), (l) => count(l, 'respuesta') === 1);
+  const before = await a.run<any[]>('sessionIdentities', nb);
+  assert.ok(before.length > 0 && before.every((x) => x), 'ana tiene sesion con beto');
+
+  await b.run('call', 'panicWipe'); // identidad nueva en el telefono de beto
+  await b.run('relogin', nb, 'clave-segura-2');
+  await b.run('waitContact', na);
+  await b.run('sendText', na, 'desde el telefono nuevo');
+  await waitFor('beto lo ve enviado', () => msgs(b, na), (l) => l.some((m) => m.body === 'desde el telefono nuevo' && m.status !== 'pending'));
+  await sleep(800);
+  const held = await msgs(a, nb);
+  assert.equal(count(held, 'desde el telefono nuevo'), 0, 'no se muestra sin aceptar');
+  assert.ok((await a.run<number>('countHeld', nb)) >= 1, 'se guardo retenido');
+  assert.ok(held.some((m) => m.kind === 'system' && /llave de seguridad distinta/.test(m.body)), 'avisa que hay mensajes retenidos');
+  assert.deepEqual(await a.run('sessionIdentities', nb), before, 'la sesion con la identidad vieja sigue igual');
+  const s: any = await a.run('state');
+  assert.ok(s.contacts.find((c: any) => c.username === nb).identityChanged, 'muestra la llave cambiada');
+
+  await a.run('call', 'acceptIdentity', nb);
+  const after = await waitFor('aparece al aceptar', () => msgs(a, nb), (l) => count(l, 'desde el telefono nuevo') === 1);
+  assert.equal(count(after, 'desde el telefono nuevo'), 1, 'una sola vez');
+  assert.equal(await a.run('countHeld', nb), 0, 'ya no queda retenido');
+  // Y la conversacion sigue en los dos sentidos con la sesion nueva
+  await a.run('sendText', nb, 'te leo');
+  await waitFor('beto recibe', () => msgs(b, na), (l) => count(l, 'te leo') === 1);
+  await Promise.all([a.close(), b.close()]);
+});
+
+test('un header con datos de otra identidad que no descifra no cambia la llave del contacto', async () => {
+  const [a, b, na, nb] = await pair();
+  await b.run('sendText', na, 'hola');
+  await waitFor('llega', () => msgs(a, nb), (l) => count(l, 'hola') === 1);
+  const fake = (n: number) => Buffer.alloc(32, n).toString('base64');
+  const header = JSON.stringify({ dh: fake(1), pn: 0, n: 0, pk: { ikSign: fake(2), ikDh: fake(3), ek: fake(4), spkId: 1 } });
+  await waitFor('cola de ana vacia', () => a.run<any>('diagnostics'), (d) => d.outbox.length === 0);
+  await a.run('spySends');
+  await a.run('inject', 'falso-1', nb, { h: header, c: Buffer.alloc(64, 5).toString('base64'), nonce: Buffer.alloc(24, 6).toString('base64') });
+  await sleep(800);
+  // Antes el header falso cambiaba la llave vista y borraba "ya le mande mis llaves": se le volvian a mandar
+  assert.deepEqual(await a.run('sentMessages'), [], 'no se le reenvian llaves por un header falso');
+  const s: any = await a.run('state');
+  assert.equal(s.contacts.find((c: any) => c.username === nb).identityChanged, false, 'la llave fijada no cambio');
+  assert.equal(await a.run('countHeld', nb), 0);
+  await b.run('sendText', na, 'sigue funcionando');
+  await waitFor('llega', () => msgs(a, nb), (l) => count(l, 'sigue funcionando') === 1);
+  await Promise.all([a.close(), b.close()]);
+});
+
+test('si falla guardar la sesion al recibir, contenido, recibido y ratchet quedan parejos y nada se repite', async () => {
+  const [a, b, na, nb] = await pair();
+  await a.run('sendText', nb, 'primero');
+  await waitFor('llega', () => msgs(b, na), (l) => count(l, 'primero') === 1);
+  // Con el chat cerrado y la cola vacia, el siguiente guardado de sesion es el de la recepcion (no un aviso de leido)
+  await b.run('open', null);
+  await waitFor('cola de beto vacia', () => b.run<any>('diagnostics'), (d) => d.outbox.length === 0);
+  await b.run('failStore', 'saveSessions', 1);
+  await a.run('sendText', nb, 'uno');
+  await waitFor('queda anotado a medias, sin confirmar al servidor', () => b.run<number>('inboundPending'), (n) => n === 1);
+  await a.run('sendText', nb, 'dos');
+  await waitFor('lo pendiente se termina antes de usar la sesion', () => b.run<number>('inboundPending'), (n) => n === 0);
+  await waitFor('llegan los dos', () => msgs(b, na), (l) => count(l, 'uno') === 1 && count(l, 'dos') === 1);
+  await b.run('dropConnection'); // el servidor reentrega "uno" (no se habia confirmado)
+  await b.run('sendText', na, 'contesto');
+  await waitFor('ana recibe la respuesta', () => msgs(a, nb), (l) => count(l, 'contesto') === 1);
+  await sleep(500);
+  const l = await msgs(b, na);
+  assert.deepEqual(bodies(l), ['primero', 'uno', 'dos', 'contesto'], 'una vez cada uno y en orden');
+  assert.ok(!l.some((m) => m.kind === 'system' && /descifrar/.test(m.body)), 'no aparece "no se pudo descifrar"');
+  assert.ok(!(await msgs(a, nb)).some((m) => m.kind === 'system' && /descifrar/.test(m.body)));
+  await Promise.all([a.close(), b.close()]);
+});
+
+test('ids y adjuntos invalidos del otro telefono se descartan sin escribir fuera de la carpeta', async () => {
+  const [a, b, na, nb] = await pair();
+  const key = Buffer.alloc(32, 1).toString('base64');
+  const nonce = Buffer.alloc(24, 2).toString('base64');
+  const path = 'a'.repeat(32) + '.bin';
+  const now = Date.now();
+  const bad = [
+    { t: 'msg', id: '../../salir', kind: 'text', body: 'id con ruta', sentAt: now },
+    { t: 'msg', id: 'foto1', kind: 'image', sentAt: now, media: { bucket: 'videos', key, nonce, path: '../../../etc/passwd' } },
+    { t: 'msg', id: 'foto2', kind: 'image', sentAt: now, media: { bucket: '../otro', key, nonce, path } },
+    { t: 'msg', id: 'foto3', kind: 'image', sentAt: now, media: { bucket: 'videos', key: 'corta', nonce, path } },
+    { t: 'msg', id: 'foto4', kind: 'image', sentAt: now }, // foto sin archivo
+    { t: 'msg', id: 'resp1', kind: 'text', body: 'cita mala', sentAt: now, replyTo: '../x' },
+    { t: 'reaction', id: '../../salir', emoji: '👍' },
+  ];
+  for (const p of bad) await a.run('call', 'queuePayload', nb, p, true);
+  await a.run('sendText', nb, 'este si');
+  const l = await waitFor('llega el bueno', () => msgs(b, na), (x) => bodies(x).includes('este si'));
+  assert.deepEqual(bodies(l).sort(), ['cita mala', 'este si'].sort(), 'solo los validos');
+  assert.equal(l.find((m) => m.body === 'cita mala')!.replyTo, null, 'la cita con ruta se quita');
+  await sleep(500);
+  assert.deepEqual(await b.run('mediaDirFiles'), [], 'no se descargo ni escribio nada');
+  assert.equal(await b.run('appFileExists', '../salir.enc'), false);
+  await Promise.all([a.close(), b.close()]);
+});
+
+test('descargas: se cancelan al pasar el limite de bytes o al vencer el tiempo, sin dejar archivos a medias', async () => {
+  const [a, b, na, nb] = await pair();
+  await b.run('limits', { maxDownloadBytes: 40 * 1024 });
+  await a.run('sendVoice', nb, 100 * 1024); // con relleno y cifrado pesa mas de 40 KB
+  await waitFor('beto la da por fallida', () => msgs(b, na), (l) => l.some((m) => m.kind === 'voice' && m.downloadState === 'failed'), 20_000);
+  assert.ok((await b.run<any>('downloadStats')).cancelled >= 1, 'se cancelo la descarga nativa');
+  assert.deepEqual(await b.run('mediaDirFiles'), [], 'no queda el pedazo descargado');
+
+  // Descarga colgada: al vencer el tiempo se cancela y se borra; al reintentar sin cuelgue, llega completa
+  await b.run('limits', { maxDownloadBytes: 50 * 1024 * 1024 });
+  await b.run('hangDownloads', true);
+  const before = (await b.run<any>('downloadStats')).cancelled;
+  const voice = await a.run<string>('sendVoice', nb, 20 * 1024);
+  await waitFor('se cancela por tiempo', () => b.run<any>('downloadStats'), (s) => s.cancelled > before, 20_000);
+  assert.deepEqual(await b.run('mediaDirFiles'), [], 'sin archivo a medias');
+  await b.run('hangDownloads', false);
+  const l = await waitFor('llega al reintentar', () => msgs(b, na), (x) => x.filter((m) => m.kind === 'voice').some((m) => m.downloadState === 'done'), 20_000);
+  const done = l.filter((m) => m.kind === 'voice').find((m) => m.downloadState === 'done')!;
+  assert.equal(await b.run('decryptMedia', na, done.id), voice, 'identica');
+  assert.equal((await b.run<string[]>('mediaDirFiles')).length, 1, 'solo la copia completa');
   await Promise.all([a.close(), b.close()]);
 });
 

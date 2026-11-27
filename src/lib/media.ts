@@ -6,6 +6,9 @@ import nacl from 'tweetnacl';
 import { SERVER_HTTP_URL } from './config';
 import { fromB64, randomHex, toB64 } from './crypto/primitives';
 import { MediaKind, MediaRef } from './types';
+import { isInside, isMediaPath, isSafeId, localFileId, MAX_ENCRYPTED_BYTES, safeFileName } from './validate';
+
+export { safeFileName };
 
 export type MediaAuth = { username: string; token: string };
 
@@ -17,8 +20,23 @@ function mediaUrl(media: MediaRef, path: string): string {
   return `${SERVER_HTTP_URL}/media/${media.bucket}/${path}`;
 }
 
-const MEDIA_DIR = `${FileSystem.documentDirectory}media/`;
+export const MEDIA_DIR = `${FileSystem.documentDirectory}media/`;
 const CACHE_DIR = `${FileSystem.cacheDirectory}mc/`;
+
+// Nombre nuevo para cada copia cifrada: nunca sale del id que trae un mensaje o un respaldo (un "../" en el id
+// escribia fuera de la carpeta) y nunca pisa un archivo que ya exista
+function newMediaFileUri(): string {
+  return `${MEDIA_DIR}${randomHex(16)}.enc`;
+}
+
+// Las copias cifradas solo se leen o borran si estan en su carpeta (la ruta viene de la base de datos)
+export function isMediaFile(uri: string | null | undefined): uri is string {
+  return isInside(MEDIA_DIR, uri);
+}
+
+export async function deleteMediaFile(uri: string | null | undefined) {
+  if (isMediaFile(uri)) await deleteFile(uri);
+}
 
 const EXTENSIONS: Record<MediaKind, string> = { image: 'jpg', video: 'mp4', voice: 'm4a', file: 'bin' };
 // Las pruebas automaticas los acortan
@@ -102,12 +120,12 @@ export function unpad(data: Uint8Array): Uint8Array {
   return data.slice(4, 4 + length);
 }
 
-export async function importPlainFile(messageId: string, plainUri: string, kind: MediaKind, deleteOriginal: boolean): Promise<{ media: MediaRef; mediaFile: string }> {
+export async function importPlainFile(_messageId: string, plainUri: string, kind: MediaKind, deleteOriginal: boolean): Promise<{ media: MediaRef; mediaFile: string }> {
   const key = nacl.randomBytes(32);
   const nonce = nacl.randomBytes(24);
   const cipher = nacl.secretbox(pad(await readBytes(plainUri)), nonce, key);
   await ensureDir(MEDIA_DIR);
-  const mediaFile = `${MEDIA_DIR}${messageId}.enc`;
+  const mediaFile = newMediaFileUri();
   await writeBytes(mediaFile, cipher);
   if (deleteOriginal) await deleteIfAppFile(plainUri);
   return { media: { bucket: bucketFor(kind), key: toB64(key), nonce: toB64(nonce), pad: 1 }, mediaFile };
@@ -128,6 +146,7 @@ export async function uploadMedia(
   recipient?: string,
   onProgress?: (fraction: number) => void,
 ): Promise<MediaRef> {
+  if (!isMediaFile(mediaFile)) throw new Error('El archivo no está en la carpeta de la app');
   const path = `${randomHex(16)}.bin`;
   const size = await fileSize(mediaFile);
   const task = FileSystem.createUploadTask(
@@ -163,27 +182,50 @@ export async function uploadMedia(
   };
 }
 
-// Descarga el archivo cifrado, comprueba que descifra bien y lo guarda tal cual (cifrado)
-export async function downloadMedia(messageId: string, media: MediaRef, auth: MediaAuth): Promise<string> {
+// Lo maximo que se acepta bajar: lo que el servidor acepta subir mas el sello del cifrado (las pruebas lo achican)
+export const MEDIA_LIMITS = { maxDownloadBytes: MAX_ENCRYPTED_BYTES + nacl.secretbox.overheadLength };
+
+// Descarga el archivo cifrado, comprueba que descifra bien y lo guarda tal cual (cifrado).
+// Se cuentan los bytes que de verdad llegan (no el tamaño que dice el mensaje): pasado el limite se cancela. Si se
+// agota el tiempo tambien se cancela la descarga nativa (antes seguia bajando en segundo plano), y en cualquier
+// fallo se borra lo que alcanzo a bajar.
+export async function downloadMedia(_messageId: string, media: MediaRef, auth: MediaAuth): Promise<string> {
   // Los mensajes de antes de este cambio solo traen la URL publica de Supabase; el nombre del archivo es lo ultimo
   const path = media.path ?? media.url?.split('/').pop();
   if (!path) throw new Error('El mensaje no trae la direccion del archivo');
+  if (!isMediaPath(path)) throw new Error('La direccion del archivo no es valida');
   await ensureDir(MEDIA_DIR);
-  const mediaFile = `${MEDIA_DIR}${messageId}.enc`;
-  const result = await withTimeout(
-    FileSystem.downloadAsync(mediaUrl(media, path), mediaFile, { headers: authHeaders(auth) }),
-    timeoutFor(media.size ?? 0, MEDIA_TIMEOUTS.download),
-    'La descarga del archivo tardó demasiado',
-  );
-  if (result.status !== 200) {
+  const mediaFile = newMediaFileUri();
+  const limit = MEDIA_LIMITS.maxDownloadBytes;
+  let tooBig = false;
+  const task = FileSystem.createDownloadResumable(mediaUrl(media, path), mediaFile, { headers: authHeaders(auth) }, (p) => {
+    if (tooBig) return;
+    if (p.totalBytesWritten > limit || p.totalBytesExpectedToWrite > limit) {
+      tooBig = true;
+      task.cancelAsync().catch(() => {});
+    }
+  });
+  try {
+    let result: FileSystem.FileSystemDownloadResult | undefined;
+    try {
+      result = await withTimeout(task.downloadAsync(), timeoutFor(media.size ?? 0, MEDIA_TIMEOUTS.download), 'La descarga del archivo tardó demasiado');
+    } catch (e) {
+      await task.cancelAsync().catch(() => {});
+      throw e;
+    }
+    if (tooBig) throw new Error('El archivo es más grande de lo permitido');
+    if (!result) throw new Error('La descarga se canceló');
+    if (result.status !== 200) throw new Error(`No se pudo descargar el archivo (HTTP ${result.status})`);
+    // El aviso de progreso no corre con la app en segundo plano: el tamaño se revisa otra vez ya en disco
+    if ((await fileSize(mediaFile)) > limit) throw new Error('El archivo es más grande de lo permitido');
+    if (!nacl.secretbox.open(await readBytes(mediaFile), fromB64(media.nonce), fromB64(media.key))) {
+      throw new Error('El archivo no se pudo descifrar');
+    }
+    return mediaFile;
+  } catch (e) {
     await deleteFile(mediaFile);
-    throw new Error(`No se pudo descargar el archivo (HTTP ${result.status})`);
+    throw e;
   }
-  if (!nacl.secretbox.open(await readBytes(mediaFile), fromB64(media.nonce), fromB64(media.key))) {
-    await deleteFile(mediaFile);
-    throw new Error('El archivo no se pudo descifrar');
-  }
-  return mediaFile;
 }
 
 const decrypting = new Map<string, Promise<string>>();
@@ -191,10 +233,12 @@ const decrypting = new Map<string, Promise<string>>();
 // Descifra a la carpeta temporal para que el reproductor/visor pueda abrirlo
 export function decryptToCache(messageId: string, kind: MediaKind, mediaFile: string, media: MediaRef): Promise<string> {
   // Los documentos conservan su nombre, asi la app que los abre sabe que son (PDF, Word…)
-  const cacheUri = kind === 'file' ? `${CACHE_DIR}f_${messageId}/${safeFileName(media.name)}` : `${CACHE_DIR}${messageId}.${EXTENSIONS[kind]}`;
+  const local = localFileId(messageId);
+  const cacheUri = kind === 'file' ? `${CACHE_DIR}f_${local}/${safeFileName(media.name)}` : `${CACHE_DIR}${local}.${EXTENSIONS[kind]}`;
   const inFlight = decrypting.get(cacheUri);
   if (inFlight) return inFlight;
   const job = (async () => {
+    if (!isMediaFile(mediaFile)) throw new Error('El archivo no está en la carpeta de la app');
     const info = await FileSystem.getInfoAsync(cacheUri);
     if (info.exists) return cacheUri;
     const opened = nacl.secretbox.open(await readBytes(mediaFile), fromB64(media.nonce), fromB64(media.key));
@@ -223,14 +267,12 @@ export async function readFileBase64(uri: string): Promise<string> {
 }
 
 export async function removeFromCache(messageId: string) {
-  for (const ext of Object.values(EXTENSIONS)) await deleteFile(`${CACHE_DIR}${messageId}.${ext}`);
-  await deleteFile(`${CACHE_DIR}f_${messageId}`);
-}
-
-// Nombre seguro para guardar en disco: sin carpetas ni caracteres raros, y con extension
-export function safeFileName(name: string | undefined): string {
-  const clean = (name ?? '').replace(/[\\/:*?"<>|\u0000-\u001f]/g, '_').replace(/^\.+/, '').trim().slice(0, 120);
-  return clean || 'documento';
+  // Nombres de antes (con el id del mensaje) solo si el id es seguro; los nuevos siempre lo son
+  const names = isSafeId(messageId) ? [localFileId(messageId), messageId] : [localFileId(messageId)];
+  for (const name of names) {
+    for (const ext of Object.values(EXTENSIONS)) await deleteFile(`${CACHE_DIR}${name}.${ext}`);
+    await deleteFile(`${CACHE_DIR}f_${name}`);
+  }
 }
 
 // Notas de voz sonando ahora: su copia descifrada no se borra al salir de la app (si no, se cortaria el audio).
@@ -289,13 +331,20 @@ export async function wipeAllMedia() {
 }
 
 export async function readMediaFileBase64(mediaFile: string): Promise<string> {
+  if (!isMediaFile(mediaFile)) throw new Error('El archivo no está en la carpeta de la app');
   return FileSystem.readAsStringAsync(mediaFile, { encoding: FileSystem.EncodingType.Base64 });
 }
 
-export async function writeMediaFileBase64(messageId: string, base64: string): Promise<string> {
+// Siempre en un archivo nuevo: restaurar un respaldo dos veces no pisa la copia que ya tenia un mensaje
+export async function writeMediaFileBase64(base64: string): Promise<string> {
   await ensureDir(MEDIA_DIR);
-  const mediaFile = `${MEDIA_DIR}${messageId}.enc`;
-  await FileSystem.writeAsStringAsync(mediaFile, base64, { encoding: FileSystem.EncodingType.Base64 });
+  const mediaFile = newMediaFileUri();
+  try {
+    await FileSystem.writeAsStringAsync(mediaFile, base64, { encoding: FileSystem.EncodingType.Base64 });
+  } catch (e) {
+    await deleteFile(mediaFile);
+    throw e;
+  }
   return mediaFile;
 }
 

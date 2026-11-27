@@ -16,6 +16,10 @@ export const control = {
   hangUploads: false, // simula una subida que se queda colgada
   uploads: 0,
   pushGranted: false, // el usuario dio permiso de notificaciones
+  hangDownloads: false, // simula una descarga que se queda colgada a la mitad
+  downloads: 0,
+  cancelledDownloads: 0,
+  partialWrites: 0,
 };
 
 // ---- expo-sqlite sobre node:sqlite ----
@@ -109,6 +113,38 @@ const fileSystem = {
     },
     cancelAsync: async () => {},
   }),
+  // Descarga por pedazos como la nativa: avisa los bytes escritos, se puede cancelar (y entonces devuelve undefined)
+  // y con control.hangDownloads se queda colgada despues del primer pedazo
+  createDownloadResumable: (url: string, fileUri: string, opts?: { headers?: Record<string, string> }, cb?: (p: { totalBytesWritten: number; totalBytesExpectedToWrite: number }) => void) => {
+    let cancelled = false;
+    let wake: (() => void) | null = null;
+    return {
+      downloadAsync: async () => {
+        control.downloads++;
+        const res = await fetch(url, { headers: opts?.headers });
+        if (!res.ok) return { status: res.status, uri: fileUri, headers: {}, mimeType: null };
+        const expected = Number(res.headers.get('content-length') ?? -1);
+        const data = Buffer.from(await res.arrayBuffer());
+        fs.mkdirSync(path.dirname(toPath(fileUri)), { recursive: true });
+        fs.writeFileSync(toPath(fileUri), Buffer.alloc(0));
+        const chunk = 16 * 1024;
+        for (let at = 0; at < data.length; at += chunk) {
+          if (cancelled) return undefined;
+          fs.appendFileSync(toPath(fileUri), data.subarray(at, at + chunk));
+          control.partialWrites++;
+          cb?.({ totalBytesWritten: Math.min(at + chunk, data.length), totalBytesExpectedToWrite: expected });
+          if (control.hangDownloads) await new Promise<void>((r) => (wake = r));
+          await new Promise((r) => setImmediate(r));
+        }
+        return cancelled ? undefined : { status: res.status, uri: fileUri, headers: {}, mimeType: null };
+      },
+      cancelAsync: async () => {
+        cancelled = true;
+        control.cancelledDownloads++;
+        wake?.();
+      },
+    };
+  },
   downloadAsync: async (url: string, fileUri: string, opts?: { headers?: Record<string, string> }) => {
     const res = await fetch(url, { headers: opts?.headers });
     if (res.ok) {

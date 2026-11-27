@@ -4,7 +4,7 @@
 import * as Notifications from 'expo-notifications';
 import * as TaskManager from 'expo-task-manager';
 import { Platform } from 'react-native';
-import { decryptPreview, getDeviceKey, getPreviewsEnabled } from './preview';
+import { getPreviewsEnabled, openPreview } from './preview';
 
 export const PREVIEW_TASK = 'aeterna-notification-preview';
 
@@ -54,8 +54,8 @@ TaskManager.defineTask(PREVIEW_TASK, async ({ data, error }) => {
   let body = 'Tienes un mensaje nuevo';
   try {
     if (encrypted && (await getPreviewsEnabled())) {
-      const key = await getDeviceKey();
-      const preview = key ? decryptPreview(key, encrypted) : null;
+      // Solo el formato de una llave por contacto; el viejo (llave compartida) se queda con el aviso generico
+      const preview = await openPreview(encrypted);
       if (preview) {
         title = preview.f;
         body = preview.b;

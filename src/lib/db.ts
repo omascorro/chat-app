@@ -50,7 +50,21 @@ CREATE TABLE IF NOT EXISTS outbox (
 CREATE TABLE IF NOT EXISTS seen_inbox (id TEXT PRIMARY KEY, at INTEGER NOT NULL);
 CREATE TABLE IF NOT EXISTS kv (key TEXT PRIMARY KEY, value TEXT NOT NULL);
 CREATE TABLE IF NOT EXISTS stickers (id TEXT PRIMARY KEY, data TEXT NOT NULL, created_at INTEGER NOT NULL);
+CREATE TABLE IF NOT EXISTS inbound_pending (inbox_id TEXT PRIMARY KEY, peer TEXT NOT NULL, payload TEXT, record TEXT NOT NULL, at INTEGER NOT NULL);
+CREATE TABLE IF NOT EXISTS held_inbox (
+  inbox_id TEXT PRIMARY KEY,
+  peer TEXT NOT NULL,
+  envelope TEXT NOT NULL,
+  sign TEXT NOT NULL,
+  dh TEXT NOT NULL,
+  at INTEGER NOT NULL
+);
 `;
+// inbound_pending (desde 2026-11): mensaje recibido ya descifrado que todavia no termina de guardarse. Se escribe en una
+// sola instruccion (contenido + sesion nueva) y se aplica despues; si algo falla a la mitad se vuelve a aplicar antes
+// de tocar la sesion de ese contacto, asi el contenido, el "ya recibido" y el ratchet nunca quedan desparejos.
+// held_inbox (desde 2026-11): mensajes que llegaron con una identidad distinta a la fijada. Se guardan cifrados y solo
+// se abren si el usuario acepta esa identidad. Las dos tablas se crean solas al abrir la base; no hay que migrar nada.
 
 async function addMissingColumns(db: SQLite.SQLiteDatabase, table: string, columns: Record<string, string>) {
   const existing = new Set((await db.getAllAsync<{ name: string }>(`PRAGMA table_info(${table})`)).map((c) => c.name));
@@ -415,6 +429,53 @@ export class Store {
     await this.db.runAsync('DELETE FROM seen_inbox WHERE at < ?', Date.now() - 60 * 24 * 60 * 60 * 1000);
   }
 
+  // ---- recepcion a medio guardar (ver inbound_pending arriba) ----
+
+  async addInboundPending(inboxId: string, peer: string, payload: string | null, record: SessionRecord) {
+    await this.db.runAsync(
+      'INSERT OR REPLACE INTO inbound_pending (inbox_id, peer, payload, record, at) VALUES (?, ?, ?, ?, ?)',
+      inboxId, peer, payload, JSON.stringify(record), Date.now(),
+    );
+  }
+
+  async listInboundPending(peer?: string): Promise<{ inboxId: string; peer: string; payload: string | null; record: SessionRecord }[]> {
+    const rows = await this.db.getAllAsync<{ inbox_id: string; peer: string; payload: string | null; record: string }>(
+      `SELECT inbox_id, peer, payload, record FROM inbound_pending${peer === undefined ? '' : ' WHERE peer = ?'} ORDER BY at ASC, rowid ASC`,
+      ...(peer === undefined ? [] : [peer]),
+    );
+    return rows.map((r) => ({ inboxId: r.inbox_id, peer: r.peer, payload: r.payload, record: JSON.parse(r.record) as SessionRecord }));
+  }
+
+  async deleteInboundPending(inboxId: string) {
+    await this.db.runAsync('DELETE FROM inbound_pending WHERE inbox_id = ?', inboxId);
+  }
+
+  // ---- mensajes retenidos por identidad distinta (ver held_inbox arriba) ----
+
+  async holdInbound(inboxId: string, peer: string, envelope: string, sender: PublicIdentity) {
+    await this.db.runAsync(
+      'INSERT OR IGNORE INTO held_inbox (inbox_id, peer, envelope, sign, dh, at) VALUES (?, ?, ?, ?, ?, ?)',
+      inboxId, peer, envelope, sender.signPub, sender.dhPub, Date.now(),
+    );
+  }
+
+  async listHeld(peer: string): Promise<{ inboxId: string; envelope: string; sender: PublicIdentity }[]> {
+    const rows = await this.db.getAllAsync<{ inbox_id: string; envelope: string; sign: string; dh: string }>(
+      'SELECT inbox_id, envelope, sign, dh FROM held_inbox WHERE peer = ? ORDER BY at ASC, rowid ASC',
+      peer,
+    );
+    return rows.map((r) => ({ inboxId: r.inbox_id, envelope: r.envelope, sender: { signPub: r.sign, dhPub: r.dh } }));
+  }
+
+  async countHeld(peer: string): Promise<number> {
+    const row = await this.db.getFirstAsync<{ n: number }>('SELECT COUNT(*) AS n FROM held_inbox WHERE peer = ?', peer);
+    return row?.n ?? 0;
+  }
+
+  async deleteHeld(inboxId: string) {
+    await this.db.runAsync('DELETE FROM held_inbox WHERE inbox_id = ?', inboxId);
+  }
+
   // ---- coleccion de stickers (PNG en base64, dentro de la base cifrada) ----
 
   async listStickers(): Promise<{ id: string; data: string }[]> {
@@ -439,6 +500,11 @@ export class Store {
 
   async deleteKv(key: string) {
     await this.db.runAsync('DELETE FROM kv WHERE key = ?', key);
+  }
+
+  async listKv(prefix: string): Promise<{ key: string; value: string }[]> {
+    const rows = await this.db.getAllAsync<{ key: string; value: string }>('SELECT key, value FROM kv WHERE substr(key, 1, ?) = ?', prefix.length, prefix);
+    return rows;
   }
 
   async setKv(key: string, value: string) {

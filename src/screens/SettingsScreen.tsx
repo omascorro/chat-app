@@ -135,8 +135,8 @@ export function SettingsScreen({ onClose }: { onClose: () => void }) {
       setBusy('Descifrando respaldo…');
       try {
         await new Promise((r) => setTimeout(r, 50));
-        const restored = await client.importBackup(current.uri, password);
-        Alert.alert('Respaldo restaurado', `Se recuperaron ${restored} mensaje(s).`);
+        const { restored, skipped } = await client.importBackup(current.uri, password);
+        Alert.alert('Respaldo restaurado', `Se recuperaron ${restored} mensaje(s).${skipped ? ` ${skipped} venían dañados y no se restauraron.` : ''}`);
       } catch (e) {
         Alert.alert('No se pudo restaurar', String((e as Error)?.message ?? e));
       } finally {

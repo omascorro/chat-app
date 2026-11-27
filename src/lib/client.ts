@@ -3,9 +3,9 @@ import * as Notifications from 'expo-notifications';
 import { AppState, AppStateStatus, Platform } from 'react-native';
 import { exportBackup, importBackup } from './backup';
 import { fromB64, newMessageId, toB64 } from './crypto/primitives';
-import { decodePayload, encodePayload, Envelope, parseHeader, PreKeyInfo } from './crypto/ratchet';
+import { decodePayload, encodePayload, Envelope } from './crypto/ratchet';
 import { safetyNumber } from './crypto/safetyNumber';
-import { canEncrypt, decryptWithRecord, encryptWithRecord } from './crypto/sessions';
+import { canEncrypt, decryptWithRecord, encryptWithRecord, SessionRecord, sessionPeerIdentity } from './crypto/sessions';
 import { Bundle, Identity, initiateSession, publicIdentity, PublicIdentity, respondToSession, SignedPreKey, verifyBundle } from './crypto/x3dh';
 import { OutboxItem, Store } from './db';
 import {
@@ -21,23 +21,8 @@ import { log } from './log';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { resetAppearance } from './appearance';
 import { ensureMessagesChannel, registerBackgroundNotifications } from './backgroundNotifications';
-import { encryptPreview, getOrCreateDeviceKey, keyFingerprint, previewText, resetDeviceKey } from './preview';
-
-// Lo que llega del otro telefono se revisa: el nombre se limpia y solo se aceptan campos conocidos
-function cleanMediaRef(m: MediaRef): MediaRef {
-  return {
-    bucket: m.bucket,
-    key: m.key,
-    nonce: m.nonce,
-    ...(typeof m.path === 'string' ? { path: m.path } : {}),
-    ...(typeof m.url === 'string' ? { url: m.url } : {}),
-    ...(m.pad ? { pad: 1 as const } : {}),
-    ...(typeof m.size === 'number' ? { size: m.size } : {}),
-    ...(typeof m.name === 'string' ? { name: safeFileName(m.name) } : {}),
-    ...(typeof m.mime === 'string' && /^[\w.+-]+\/[\w.+-]+$/.test(m.mime) ? { mime: m.mime.slice(0, 100) } : {}),
-    ...(typeof m.bytes === 'number' && m.bytes >= 0 ? { bytes: Math.round(m.bytes) } : {}),
-  };
-}
+import { createPeerPreviewKey, deletePeerPreviewKey, encryptPreviewV2, hasPeerPreviewKey, KID_REGEX, previewText, resetDeviceKey } from './preview';
+import { cleanMediaRef, isSafeId, isValidUsername } from './validate';
 
 // Comentario de una foto, video o documento
 function cleanCaption(caption: string | undefined): string {
@@ -54,7 +39,7 @@ function fromB64Safe(value: string): Uint8Array | null {
 import { SERVER_URL } from './config';
 import {
   decryptToCache,
-  deleteFile,
+  deleteMediaFile,
   downloadMedia,
   importPlainFile,
   fileSize,
@@ -73,7 +58,7 @@ import {
 import { prepareStickerImage, stickerIdFor } from './stickers';
 import { decryptPicture, isEncryptedPicture, newProfileKey } from './profilePhoto';
 import { migrateLegacyData } from './migrate';
-import { ChatMessage, Contact, formatTtl, MediaKind, MediaRef, Payload } from './types';
+import { ChatMessage, Contact, formatTtl, MediaKind, Payload } from './types';
 import { MAX_REACTION_LENGTH } from './reactions';
 
 const PROTOCOL_VERSION = 2;
@@ -129,6 +114,12 @@ export type ClientState = {
 };
 
 type ServerUser = { username: string; online: boolean; profilePicture: string | null; identity: PublicIdentity | null };
+type InboundOutcome =
+  | { kind: 'applied'; payload: Payload | null }
+  | { kind: 'held'; sender: PublicIdentity }
+  | { kind: 'duplicate' }
+  | { kind: 'undecryptable'; error: unknown };
+const MAX_HELD_PER_PEER = 500; // mensajes retenidos por identidad distinta que se guardan por contacto
 type SendResult = 'accepted' | 'rejected' | 'timeout';
 type ItemResult = 'done' | 'blocked' | 'retry';
 
@@ -432,6 +423,8 @@ export class ChatClient {
     this.spkNeedsPublish = rotated;
     this.store = store;
     this.storeReady.resolve(store);
+    await this.migratePreviewKeys(store).catch((e) => log('No se pudieron retirar las llaves de vista previa viejas:', e));
+    await this.settleAllInbound(store).catch((e) => log('No se pudo terminar de guardar lo recibido:', e));
     this.startSweep();
     await this.loadTimers(store);
     await this.loadPins(store);
@@ -445,7 +438,11 @@ export class ChatClient {
     this.send({ type: 'logout' });
     const store = this.store;
     this.store = null;
-    if (store) await store.close().catch(() => {});
+    // Las llaves de vista previa estan en el llavero (no en la base): se borran antes de perder su lista
+    if (store) {
+      for (const row of await store.listKv('nk2_mine:').catch(() => [])) await deletePeerPreviewKey(row.value);
+      await store.close().catch(() => {});
+    }
     if (username) {
       await Store.deleteDatabase(username).catch((e) => log('No se pudo borrar la base de datos:', e));
       await wipeAccountKeys(username);
@@ -860,7 +857,12 @@ export class ChatClient {
     const key = toB64(await this.profileKey(store));
     let queued = false;
     for (const c of contacts) {
-      if (!c.identity || c.identityChanged || (await store.getKv(`pk_sent:${c.username}`)) === key) continue;
+      if (!c.identity || c.identityChanged) continue;
+      // Tambien la llave de vista previa: asi me puede mandar notificaciones con texto aunque yo no le haya escrito
+      const before = await store.getKv(`nk2_sent:${c.username}`);
+      await this.ensurePreviewKeyShared(store, c.username);
+      if ((await store.getKv(`nk2_sent:${c.username}`)) !== before) queued = true;
+      if ((await store.getKv(`pk_sent:${c.username}`)) === key) continue;
       await store.addOutbox({ id: newMessageId(), peer: c.username, payload: JSON.stringify({ t: 'pk', key }), silent: true, createdAt: Date.now() });
       await store.setKv(`pk_sent:${c.username}`, key);
       queued = true;
@@ -868,31 +870,32 @@ export class ChatClient {
     if (queued) this.flush();
   }
 
-  private async noteIdentityFromPreKey(store: Store, peer: string, pk: PreKeyInfo) {
-    const identity = { signPub: pk.ikSign, dhPub: pk.ikDh };
-    const keys = await store.getContactKeys(peer);
-    if (!keys.pinned) {
-      await store.saveContactKeys(peer, { pinned: identity, seen: identity, verified: false });
-    } else if (!sameIdentity(keys.seen, identity)) {
-      await store.saveContactKeys(peer, { ...keys, seen: identity });
-      // Su telefono es nuevo: hay que volver a mandarle mis llaves de vista previa y de perfil
-      await store.deleteKv(`nk_sent:${peer}`);
-      await store.deleteKv(`pk_sent:${peer}`);
-    }
-  }
-
+  // Aceptar la identidad nueva de un contacto. Todo bajo su candado: la comprobacion, la llave fijada y el borrado de
+  // la sesion vieja no se pueden mezclar con un mensaje que se este recibiendo o enviando a la vez. Despues se abren
+  // los mensajes que llegaron retenidos con esa identidad (los de otra identidad se descartan).
   async acceptIdentity(peer: string) {
     const store = this.store;
     if (!store) return;
-    await store.deleteKv(`nk_sent:${peer}`);
-    await store.deleteKv(`pk_sent:${peer}`);
-    const keys = await store.getContactKeys(peer);
-    if (!keys.seen) return;
-    await store.saveContactKeys(peer, { pinned: keys.seen, seen: keys.seen, verified: false });
-    await this.withLock(peer, () => store.deleteSessions(peer));
+    const accepted = await this.withLock(peer, async () => {
+      await this.settleInbound(store, peer);
+      const keys = await store.getContactKeys(peer);
+      if (!keys.seen) return false;
+      await store.saveContactKeys(peer, { pinned: keys.seen, seen: keys.seen, verified: false });
+      await store.deleteSessions(peer);
+      // Su telefono es nuevo: hay que volver a mandarle mis llaves de vista previa y de perfil
+      await this.retirePreviewKeys(store, peer);
+      await store.deleteKv(`pk_sent:${peer}`);
+      await store.deleteKv(`held_notice:${peer}`);
+      return true;
+    });
+    if (!accepted) return;
     await this.addSystemMessage(peer, 'Aceptaste la llave de seguridad nueva. Verifica el número de seguridad para estar seguro.');
     await this.refreshContacts();
     this.flush();
+    // Por la misma fila que lo que llega del servidor, para no adelantarse a un mensaje que se este procesando
+    const done = deferred<void>();
+    this.enqueueInbound(() => this.releaseHeld(store, peer).finally(() => done.resolve()));
+    await done.promise;
   }
 
   async setVerified(peer: string, verified: boolean) {
@@ -914,9 +917,12 @@ export class ChatClient {
   async resetSession(peer: string) {
     const store = this.store;
     if (!store) return;
-    await store.deleteKv(`nk_sent:${peer}`);
-    await store.deleteKv(`pk_sent:${peer}`);
-    await this.withLock(peer, () => store.deleteSessions(peer));
+    await this.withLock(peer, async () => {
+      await this.settleInbound(store, peer);
+      await store.deleteSessions(peer);
+      await this.retirePreviewKeys(store, peer);
+      await store.deleteKv(`pk_sent:${peer}`);
+    });
     await this.addSystemMessage(peer, 'Reiniciaste la sesión cifrada con este contacto.');
   }
 
@@ -928,6 +934,9 @@ export class ChatClient {
 
   removeContact(username: string) {
     this.send({ type: 'remove-contact', username });
+    // La llave de vista previa que le di ya no sirve para mostrar nada
+    const store = this.store;
+    if (store) this.retirePreviewKeys(store, username).catch((e) => log('No se pudo retirar la llave de vista previa:', e));
   }
 
   async updateProfilePicture(base64: string): Promise<boolean> {
@@ -1071,49 +1080,25 @@ export class ChatClient {
 
   private async processInbound(inboxId: string, from: string, envelope: Envelope) {
     const store = this.store;
-    if (!store || !this.identity || typeof from !== 'string') return;
+    if (!store || !this.identity || typeof inboxId !== 'string' || !isValidUsername(from)) return;
     if (this.seenInbox.has(inboxId) || (await store.wasSeen(inboxId))) {
       this.send({ type: 'ack', ids: [inboxId] });
       return;
     }
 
-    const identity = this.identity;
-    let payload: Payload | null = null;
-    // Si falla el guardado (no el descifrado) no se confirma: el servidor conserva el mensaje y lo reentrega al
-    // reconectar. Antes cualquier error contaba como "no se pudo descifrar" y el servidor borraba su copia.
-    let step = 'crypto' as 'crypto' | 'storage';
+    let outcome: InboundOutcome;
     try {
-      const header = parseHeader(envelope.h);
-      if (header.pk) await this.noteIdentityFromPreKey(store, from, header.pk);
       // Todo bajo el mismo candado: si el envio leyera la sesion entre descifrar y guardar, reusaria una llave
-      await this.withLock(from, async () => {
-        step = 'storage';
-        const record = await store.getSessions(from);
-        step = 'crypto';
-        const result = decryptWithRecord(record, envelope, (pk) => {
-          const spk = this.spks.find((s) => s.id === pk.spkId);
-          if (!spk) throw new Error('Prekey desconocida');
-          return respondToSession(identity, spk, pk);
-        });
-        try {
-          payload = decodePayload<Payload>(result.plaintext);
-        } catch {
-          log('Contenido invalido de', from);
-        }
-        step = 'storage';
-        // Orden importante: primero se guarda el contenido (es idempotente), despues se anota como recibido y al final
-        // la sesion. Si algo falla a la mitad, la reentrega vuelve a descifrar con la sesion anterior; si ya estaba
-        // anotado, solo se confirma (descifrar otra vez con la sesion nueva fallaria).
-        if (payload) await this.applyPayload(store, from, payload);
-        await store.markSeen(inboxId);
-        await store.saveSessions(from, result.record);
-      });
+      outcome = await this.withLock(from, () => this.openInbound(store, inboxId, from, envelope, false));
     } catch (e) {
-      if (step === 'storage') {
-        log('No se pudo guardar un mensaje de', from, '- se queda en el servidor para reentregarlo', e);
-        return;
-      }
-      log('No se pudo descifrar un mensaje de', from, e);
+      // Si falla el guardado (no el descifrado) no se confirma: el servidor conserva el mensaje y lo reentrega al
+      // reconectar. Antes cualquier error contaba como "no se pudo descifrar" y el servidor borraba su copia.
+      log('No se pudo guardar un mensaje de', from, '- se queda en el servidor para reentregarlo', e);
+      return;
+    }
+
+    if (outcome.kind === 'undecryptable') {
+      log('No se pudo descifrar un mensaje de', from, outcome.error);
       await this.addSystemMessage(from, 'No se pudo descifrar un mensaje. Si pasa seguido, reinicia la sesión cifrada desde la información del contacto.');
       await store.markSeen(inboxId);
       this.send({ type: 'ack', ids: [inboxId] });
@@ -1123,18 +1108,137 @@ export class ChatClient {
 
     this.seenInbox.add(inboxId);
     this.send({ type: 'ack', ids: [inboxId] });
+    if (outcome.kind === 'held') await this.noticeHeld(store, from, outcome.sender);
     await this.afterChange(from);
-    const applied = payload as Payload | null;
+    if (outcome.kind !== 'applied') return;
+    const applied = outcome.payload;
     // Si llego su mensaje, ya termino de escribir
     if (applied?.t === 'msg') this.clearPeerTyping(from);
     if (applied?.t === 'msg' && applied.media) this.runDownloads();
     if (this.state.openPeer === from) await this.markConversationRead(from);
   }
 
+  // Descifra y guarda un mensaje. Se llama con el candado del contacto tomado.
+  //
+  // 1. La identidad del que lo manda se saca de la sesion que logro descifrarlo (autenticada), no del header: antes
+  //    un header con datos de otra identidad cambiaba la llave del contacto aunque el mensaje no descifrara.
+  // 2. Si esa identidad no es la fijada, el mensaje se guarda cifrado aparte (held_inbox) y no se aplica, ni se guarda
+  //    la sesion nueva, hasta que el usuario acepte la identidad (acceptIdentity -> releaseHeld).
+  // 3. Si es la fijada, contenido + sesion nueva se escriben juntos en una sola instruccion (inbound_pending) y despues
+  //    se aplican. Si algo falla a la mitad, settleInbound lo termina antes de volver a usar la sesion de ese contacto.
+  private async openInbound(store: Store, inboxId: string, from: string, envelope: Envelope, fromHeld: boolean): Promise<InboundOutcome> {
+    const identity = this.identity;
+    if (!identity) throw new Error('Sin identidad');
+    await this.settleInbound(store, from);
+    if (!fromHeld && (await store.wasSeen(inboxId))) return { kind: 'duplicate' };
+    const record = await store.getSessions(from);
+    const keys = await store.getContactKeys(from);
+
+    let result: { record: SessionRecord; plaintext: Uint8Array };
+    let sender: PublicIdentity | null;
+    try {
+      if (!envelope || typeof envelope.h !== 'string' || typeof envelope.c !== 'string' || typeof envelope.nonce !== 'string') {
+        throw new Error('Mensaje mal formado');
+      }
+      result = decryptWithRecord(record, envelope, (pk) => {
+        const spk = this.spks.find((s) => s.id === pk.spkId);
+        if (!spk) throw new Error('Prekey desconocida');
+        return respondToSession(identity, spk, pk);
+      });
+      sender = sessionPeerIdentity(result.record[0], publicIdentity(identity));
+      if (!sender) throw new Error('La sesion no dice de quien es');
+    } catch (error) {
+      return { kind: 'undecryptable', error };
+    }
+
+    if (keys.pinned && !sameIdentity(keys.pinned, sender)) {
+      if (fromHeld) return { kind: 'duplicate' }; // retenido con una identidad que no fue la aceptada: se descarta
+      if ((await store.countHeld(from)) < MAX_HELD_PER_PEER) await store.holdInbound(inboxId, from, JSON.stringify(envelope), sender);
+      if (!sameIdentity(keys.seen, sender)) await store.saveContactKeys(from, { ...keys, seen: sender });
+      await store.markSeen(inboxId);
+      return { kind: 'held', sender };
+    }
+
+    let payload: Payload | null = null;
+    try {
+      payload = decodePayload<Payload>(result.plaintext);
+    } catch {
+      log('Contenido invalido de', from);
+    }
+    // Primera vez que llega algo de este contacto: se fija su identidad (como Signal) hasta que la verifiquen
+    if (!keys.pinned) await store.saveContactKeys(from, { pinned: sender, seen: sender, verified: false });
+    await store.addInboundPending(inboxId, from, payload ? JSON.stringify(payload) : null, result.record);
+    await this.settleInbound(store, from);
+    return { kind: 'applied', payload };
+  }
+
+  // Termina de guardar lo recibido de `peer` que quedo a medias: aplica el contenido (es idempotente), guarda la sesion,
+  // lo anota como recibido y borra la nota. Se llama con el candado de `peer` tomado, antes de leer su sesion.
+  private async settleInbound(store: Store, peer: string) {
+    for (const pending of await store.listInboundPending(peer)) {
+      if (pending.payload) {
+        let payload: Payload | null = null;
+        try {
+          payload = JSON.parse(pending.payload) as Payload;
+        } catch {
+          // no deberia pasar: se guardo con JSON.stringify
+        }
+        if (payload) await this.applyPayload(store, peer, payload);
+      }
+      await store.saveSessions(peer, pending.record);
+      await store.markSeen(pending.inboxId);
+      await store.deleteInboundPending(pending.inboxId);
+    }
+  }
+
+  // Al abrir la cuenta: lo que quedo a medias la ultima vez (la app se cerro o fallo el disco a la mitad)
+  private async settleAllInbound(store: Store) {
+    const peers = new Set((await store.listInboundPending()).map((p) => p.peer));
+    for (const peer of peers) await this.withLock(peer, () => this.settleInbound(store, peer));
+  }
+
+  // Un aviso en el chat la primera vez que se retiene un mensaje de esa identidad
+  private async noticeHeld(store: Store, peer: string, sender: PublicIdentity) {
+    const marker = `${sender.signPub}:${sender.dhPub}`;
+    if ((await store.getKv(`held_notice:${peer}`)) === marker) return;
+    await store.setKv(`held_notice:${peer}`, marker);
+    await this.addSystemMessage(
+      peer,
+      `Llegaron mensajes de ${peer} con una llave de seguridad distinta. Se guardaron sin abrir: para verlos, revisa el número de seguridad y acepta la llave nueva.`,
+    );
+  }
+
+  // Abre, en orden, los mensajes retenidos de `peer` despues de aceptar su identidad nueva
+  private async releaseHeld(store: Store, peer: string) {
+    let releasedMedia = false;
+    for (const held of await store.listHeld(peer)) {
+      if (this.store !== store) return;
+      let envelope: Envelope;
+      try {
+        envelope = JSON.parse(held.envelope) as Envelope;
+      } catch {
+        await store.deleteHeld(held.inboxId);
+        continue;
+      }
+      const outcome = await this.withLock(peer, () => this.openInbound(store, held.inboxId, peer, envelope, true));
+      if (outcome.kind === 'undecryptable') log('Un mensaje retenido de', peer, 'no se pudo abrir:', outcome.error);
+      if (outcome.kind === 'applied' && outcome.payload?.t === 'msg' && outcome.payload.media) releasedMedia = true;
+      await store.deleteHeld(held.inboxId);
+    }
+    await this.afterChange(peer);
+    if (releasedMedia) this.runDownloads();
+    if (this.state.openPeer === peer) await this.markConversationRead(peer);
+  }
+
   private async applyPayload(store: Store, from: string, p: Payload) {
+    if (!p || typeof p !== 'object') return;
     if (p.t === 'msg') {
-      if (typeof p.id !== 'string' || p.id.length > 64 || !['text', 'image', 'sticker', 'video', 'voice', 'file'].includes(p.kind)) return;
-      if (p.kind === 'file' && !p.media) return;
+      // El id termina en la base y en nombres de archivos temporales: solo letras, numeros, "-" y "_"
+      if (!isSafeId(p.id) || !['text', 'image', 'sticker', 'video', 'voice', 'file'].includes(p.kind)) return;
+      // Un adjunto con llave, nonce, bucket o direccion invalidos no se guarda (antes se guardaba tal cual llegaba)
+      const media = p.media === undefined || p.media === null ? null : cleanMediaRef(p.media);
+      if (p.media && !media) return;
+      if ((p.kind === 'file' || p.kind === 'image' || p.kind === 'video' || p.kind === 'voice') && !media) return;
       const now = Date.now();
       const sentAt = typeof p.sentAt === 'number' && p.sentAt < now + 5 * 60_000 ? p.sentAt : now;
       // Versiones anteriores solo mandaban selfDestruct (10 segundos)
@@ -1145,16 +1249,16 @@ export class ChatClient {
         fromMe: false,
         kind: p.kind,
         body: typeof p.body === 'string' ? p.body.slice(0, MAX_TEXT_LENGTH) : '',
-        media: p.media ? cleanMediaRef(p.media) : null,
+        media,
         mediaFile: null,
-        downloadState: p.media ? 'pending' : 'none',
-        duration: typeof p.duration === 'number' ? p.duration : null,
+        downloadState: media ? 'pending' : 'none',
+        duration: typeof p.duration === 'number' && Number.isFinite(p.duration) && p.duration >= 0 ? p.duration : null,
         sentAt,
         status: 'sent',
         selfDestruct: ttl !== null,
         ttl,
         expiresAt: null,
-        replyTo: typeof p.replyTo === 'string' ? p.replyTo : null,
+        replyTo: isSafeId(p.replyTo) ? p.replyTo : null,
         editedAt: null,
         deleted: false,
         reactions: {},
@@ -1178,6 +1282,7 @@ export class ChatClient {
 
     if (p.t === 'read') {
       for (const id of (Array.isArray(p.ids) ? p.ids : []).slice(0, 500)) {
+        if (!isSafeId(id)) continue;
         const target = await store.getMessage(id);
         if (target && target.fromMe && target.peer === from && target.status !== 'read') await store.setStatus(id, 'read');
       }
@@ -1195,19 +1300,22 @@ export class ChatClient {
 
     if (p.t === 'pk') {
       // Llave de perfil del contacto: con ella veo su foto de perfil cifrada
-      if (typeof p.key === 'string' && fromB64Safe(p.key)?.length === 32) {
-        await store.setKv(`peer_pk:${from}`, p.key);
-        await this.refreshContacts();
+      // (la lista de contactos se refresca al terminar de recibir, ver processInbound)
+      if (typeof p.key === 'string' && fromB64Safe(p.key)?.length === 32) await store.setKv(`peer_pk:${from}`, p.key);
+      return;
+    }
+
+    if (p.t === 'nk') return; // formato viejo (llave compartida con todos sus contactos): ya no se usa
+
+    if (p.t === 'nk2') {
+      // Llave de vista previa que el contacto me dio solo a mi: con ella le cifro la vista previa de mis mensajes
+      if (typeof p.kid === 'string' && KID_REGEX.test(p.kid) && typeof p.key === 'string' && fromB64Safe(p.key)?.length === 32) {
+        await store.setKv(`peer_nk2:${from}`, JSON.stringify({ kid: p.kid, key: p.key }));
       }
       return;
     }
 
-    if (p.t === 'nk') {
-      // Llave de vista previa del contacto: con ella le cifro la vista previa de mis mensajes
-      if (typeof p.key === 'string' && fromB64Safe(p.key)?.length === 32) await store.setKv(`peer_nk:${from}`, p.key);
-      return;
-    }
-
+    if (!isSafeId((p as { id?: unknown }).id)) return;
     const target = await store.getMessage(p.id);
     if (!target || target.peer !== from) return;
 
@@ -1229,7 +1337,7 @@ export class ChatClient {
     } else if (p.t === 'viewed') {
       // El otro abrio la foto de "ver una vez": tambien se borra la copia de quien la mando
       if (target.fromMe && target.viewOnce && !target.viewed) {
-        await deleteFile(target.mediaFile);
+        await deleteMediaFile(target.mediaFile);
         await removeFromCache(target.id);
         await store.setViewed(target.id);
       }
@@ -1285,7 +1393,7 @@ export class ChatClient {
 
   private async wipeConversation(store: Store, peer: string, upTo: number) {
     for (const f of await store.mediaFilesOf(peer, upTo)) {
-      await deleteFile(f.mediaFile);
+      await deleteMediaFile(f.mediaFile);
       await removeFromCache(f.id);
     }
     await store.clearConversation(peer, upTo);
@@ -1386,7 +1494,7 @@ export class ChatClient {
     const store = this.store;
     const target = store ? await store.getMessage(id) : null;
     if (!store || !target || target.fromMe || !target.viewOnce || target.viewed) return;
-    await deleteFile(target.mediaFile);
+    await deleteMediaFile(target.mediaFile);
     await removeFromCache(id);
     await store.setViewed(id);
     await this.reloadMessages(peer);
@@ -1394,7 +1502,7 @@ export class ChatClient {
   }
 
   private async deleteLocalCopy(store: Store, message: ChatMessage, keepPlaceholder: boolean) {
-    await deleteFile(message.mediaFile);
+    await deleteMediaFile(message.mediaFile);
     await removeFromCache(message.id);
     if (keepPlaceholder) await store.markDeleted(message.id);
     else await store.deleteMessage(message.id);
@@ -1512,21 +1620,56 @@ export class ChatClient {
     };
   }
 
-  // La primera vez que le escribo a alguien (o si mi llave cambio) le mando mi llave de vista previa
+  // ---------- llaves de vista previa (una por contacto, ver preview.ts) ----------
+  // kv nk2_mine:<peer> = id de la llave que le di a ese contacto (la llave vive en el llavero, no en la base)
+  // kv nk2_sent:<peer> = id que ya le mande; kv peer_nk2:<peer> = {kid, key} que el me dio para cifrarle
+
+  // Le mando a `peer` la llave con la que me cifra sus vistas previas (una sola vez, o de nuevo si se retiro)
   private async ensurePreviewKeyShared(store: Store, peer: string) {
-    const key = await getOrCreateDeviceKey();
-    const fingerprint = keyFingerprint(key);
-    if ((await store.getKv(`nk_sent:${peer}`)) === fingerprint) return;
-    await store.addOutbox({ id: newMessageId(), peer, payload: JSON.stringify({ t: 'nk', key: toB64(key) }), silent: true, createdAt: Date.now() });
-    await store.setKv(`nk_sent:${peer}`, fingerprint);
+    const current = await store.getKv(`nk2_mine:${peer}`);
+    if (current && (await store.getKv(`nk2_sent:${peer}`)) === current && (await hasPeerPreviewKey(current))) return;
+    // Si no habia, se borro del llavero o no se alcanzo a mandar: se crea otra (la anterior se retira)
+    if (current) await deletePeerPreviewKey(current);
+    const created = await createPeerPreviewKey(peer);
+    if (!created) return; // sin llavero: le llega el aviso generico
+    await store.setKv(`nk2_mine:${peer}`, created.kid);
+    await store.addOutbox({ id: newMessageId(), peer, payload: JSON.stringify({ t: 'nk2', kid: created.kid, key: toB64(created.key) }), silent: true, createdAt: Date.now() });
+    await store.setKv(`nk2_sent:${peer}`, created.kid);
   }
 
-  // Vista previa cifrada con la llave del destinatario (si ya me la mando); el servidor no la puede leer
+  // Retira las llaves de vista previa con `peer`: la mia se borra del llavero (lo que llegue cifrado con ella se ve
+  // generico) y la suya se olvida hasta que mande otra
+  private async retirePreviewKeys(store: Store, peer: string) {
+    const kid = await store.getKv(`nk2_mine:${peer}`);
+    if (kid) await deletePeerPreviewKey(kid);
+    await store.deleteKv(`nk2_mine:${peer}`);
+    await store.deleteKv(`nk2_sent:${peer}`);
+    await store.deleteKv(`peer_nk2:${peer}`);
+  }
+
+  // Una sola vez al pasar a la version 2: se borra la llave unica compartida con todos y las que habian mandado los
+  // contactos en el formato viejo. Las llaves nuevas se mandan solas (refreshContacts y al escribir).
+  private async migratePreviewKeys(store: Store) {
+    if ((await store.getKv('preview_v2')) === '1') return;
+    await resetDeviceKey();
+    for (const prefix of ['peer_nk:', 'nk_sent:']) {
+      for (const row of await store.listKv(prefix)) await store.deleteKv(row.key);
+    }
+    await store.setKv('preview_v2', '1');
+  }
+
+  // Vista previa cifrada con la llave que me dio el destinatario; sin ella, el servidor manda el aviso generico
   private async buildPreview(store: Store, peer: string, payload: Payload): Promise<string | undefined> {
     if (payload.t !== 'msg') return undefined;
-    const peerKey = fromB64Safe((await store.getKv(`peer_nk:${peer}`)) ?? '');
-    if (!peerKey || peerKey.length !== 32) return undefined;
-    return encryptPreview(peerKey, { f: this.state.username, b: previewText(payload) });
+    let stored: { kid?: unknown; key?: unknown } | null = null;
+    try {
+      stored = JSON.parse((await store.getKv(`peer_nk2:${peer}`)) ?? 'null');
+    } catch {
+      return undefined;
+    }
+    const key = typeof stored?.key === 'string' ? fromB64Safe(stored.key) : null;
+    if (!stored || typeof stored.kid !== 'string' || !KID_REGEX.test(stored.kid) || key?.length !== 32) return undefined;
+    return encryptPreviewV2(stored.kid, key, previewText(payload));
   }
 
   private async queueOutgoing(message: ChatMessage) {
@@ -1873,6 +2016,8 @@ export class ChatClient {
     }
 
     const encrypted = await this.withLock(item.peer, async (): Promise<Envelope | 'blocked'> => {
+      // Si un mensaje recibido quedo a medio guardar, su sesion es la mas nueva: se termina antes de cifrar con ella
+      await this.settleInbound(store, item.peer);
       let record = await store.getSessions(item.peer);
       if (!canEncrypt(record)) {
         const res = await this.request({ type: 'get-bundle', username: item.peer });
@@ -1920,7 +2065,7 @@ export class ChatClient {
       if (message && message.status === 'pending') await store.setStatus(payload.id, result === 'accepted' ? 'sent' : 'failed');
       // Una foto de "ver una vez" ya salio: quien la mando tampoco se queda con copia
       if (message && result === 'accepted' && message.viewOnce) {
-        await deleteFile(message.mediaFile);
+        await deleteMediaFile(message.mediaFile);
         await store.setMedia(message.id, null, null, 'none');
       }
       await this.reloadMessages(item.peer);
@@ -1968,12 +2113,12 @@ export class ChatClient {
     return exportBackup(this.store, this.state.username, password, includeMedia);
   }
 
-  async importBackup(uri: string, password: string): Promise<number> {
+  async importBackup(uri: string, password: string): Promise<{ restored: number; skipped: number }> {
     if (!this.store) throw new Error('No hay sesion abierta');
-    const restored = await importBackup(this.store, uri, password);
+    const result = await importBackup(this.store, uri, password);
     await this.refreshContacts();
     if (this.state.openPeer) await this.reloadMessages(this.state.openPeer);
-    return restored;
+    return result;
   }
 
   getMyUsername() {

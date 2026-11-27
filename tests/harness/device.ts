@@ -333,6 +333,58 @@ const commands: Record<string, (...args: any[]) => Promise<unknown>> = {
       });
     }
   },
+  // ---- seguridad (2026-11) ----
+  // Lo que la extension / la tarea de Android mostraria con esta vista previa (null = aviso generico)
+  async openPreview(data: string) {
+    const { openPreview } = require('../../src/lib/preview') as typeof import('../../src/lib/preview');
+    return openPreview(data);
+  },
+  async kv(key: string) {
+    return (client as any).store.getKv(key);
+  },
+  async secureItem(name: string) {
+    const SecureStore = require('expo-secure-store');
+    return SecureStore.getItemAsync(name);
+  },
+  async countHeld(peer: string) {
+    return (client as any).store.countHeld(peer);
+  },
+  async inboundPending() {
+    return ((client as any).store.listInboundPending() as Promise<unknown[]>).then((l) => l.length);
+  },
+  // Identidades (datos asociados) de cada sesion guardada con `peer`, para ver que nadie la sustituyo
+  async sessionIdentities(peer: string) {
+    const record = await (client as any).store.getSessions(peer);
+    return record.map((s: any) => s.ad);
+  },
+  // Entrega directa al codigo que recibe, como si el servidor mandara este sobre (para sobres falsificados)
+  async inject(inboxId: string, from: string, envelope: unknown) {
+    await (client as any).processInbound(inboxId, from, envelope);
+  },
+  async limits(values: { maxDownloadBytes?: number }) {
+    const { MEDIA_LIMITS } = require('../../src/lib/media') as typeof import('../../src/lib/media');
+    Object.assign(MEDIA_LIMITS, values);
+  },
+  async hangDownloads(on: boolean) {
+    control.hangDownloads = on;
+  },
+  async downloadStats() {
+    return { downloads: control.downloads, cancelled: control.cancelledDownloads };
+  },
+  // Archivos en la carpeta de copias cifradas y fuera de ella dentro de la carpeta de la app
+  async mediaDirFiles() {
+    const fs = require('node:fs') as typeof import('node:fs');
+    const { MEDIA_DIR } = require('../../src/lib/media') as typeof import('../../src/lib/media');
+    const dir = decodeURIComponent(MEDIA_DIR.replace(/^file:\/\//, ''));
+    return fs.existsSync(dir) ? fs.readdirSync(dir) : [];
+  },
+  async appFileExists(relative: string) {
+    const FileSystem = require('expo-file-system/legacy');
+    return fileExists(`${FileSystem.documentDirectory}${relative}`);
+  },
+  async writeTestFile(name: string, text: string) {
+    return makeTestFile(name, Buffer.from(text, 'utf8'));
+  },
   async call(method: string, ...args: unknown[]) {
     return (client as any)[method](...args);
   },

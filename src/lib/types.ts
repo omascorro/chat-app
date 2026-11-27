@@ -83,7 +83,8 @@ export type Payload =
   | { t: 'timer'; seconds: number }
   | { t: 'pin'; id: string; pinned: boolean }
   | { t: 'pk'; key: string } // llave para descifrar la foto de perfil de quien lo manda
-  | { t: 'nk'; key: string } // llave de vista previa de las notificaciones de quien lo manda
+  | { t: 'nk'; key: string } // version 1 de la llave de vista previa (compartida con todos): se ignora
+  | { t: 'nk2'; kid: string; key: string } // llave de vista previa que quien lo manda me dio solo a mi
   | { t: 'clear'; upTo: number } // vaciar el chat para los dos (mensajes enviados hasta esa hora)
   | { t: 'viewed'; id: string }
   | { t: 'edit'; id: string; body: string; at: number }

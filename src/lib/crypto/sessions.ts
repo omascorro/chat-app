@@ -1,5 +1,6 @@
 // Varias sesiones por contacto, como en Signal: si los dos inician a la vez quedan dos sesiones
 // y se usa la ultima que funciono. La primera de la lista es la que se usa para enviar.
+import { fromB64, toB64 } from './primitives';
 import { Envelope, parseHeader, PreKeyInfo, ratchetDecrypt, ratchetEncrypt, RatchetState } from './ratchet';
 
 const MAX_SESSIONS = 5;
@@ -22,6 +23,25 @@ function promote(record: SessionRecord, index: number, state: RatchetState): Ses
 }
 
 export type DecryptResult = { record: SessionRecord; plaintext: Uint8Array; preKey: PreKeyInfo | null };
+
+// Identidad del otro en una sesion. Los datos asociados (ad) son firma|dh de quien inicio y firma|dh de quien
+// respondio (ver x3dh.ts), y van autenticados en cada mensaje: si un mensaje descifro con esta sesion, el que lo mando
+// tiene esta identidad. A diferencia del header (que llega sin autenticar), esto si sirve para decidir de quien es.
+export function sessionPeerIdentity(state: RatchetState, me: { signPub: string; dhPub: string }): { signPub: string; dhPub: string } | null {
+  let ad: Uint8Array;
+  try {
+    ad = fromB64(state.ad);
+  } catch {
+    return null;
+  }
+  if (ad.length !== 128) return null;
+  const initiator = { signPub: toB64(ad.subarray(0, 32)), dhPub: toB64(ad.subarray(32, 64)) };
+  const responder = { signPub: toB64(ad.subarray(64, 96)), dhPub: toB64(ad.subarray(96, 128)) };
+  const isMe = (x: { signPub: string; dhPub: string }) => x.signPub === me.signPub && x.dhPub === me.dhPub;
+  if (isMe(initiator) && !isMe(responder)) return responder;
+  if (isMe(responder) && !isMe(initiator)) return initiator;
+  return null;
+}
 
 // createFromPreKey crea la sesion de Bob a partir de los datos X3DH del header (o lanza si no se puede)
 export function decryptWithRecord(

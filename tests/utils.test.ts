@@ -4,6 +4,9 @@ import { dayKey, dayLabel } from '../src/lib/dates';
 import { findMatches, splitByMatches } from '../src/lib/highlight';
 import { MAX_REACTION_LENGTH, QUICK_REACTIONS, REACTION_GROUPS } from '../src/lib/reactions';
 import { normalizeForSearch } from '../src/lib/text';
+import { sessionPeerIdentity } from '../src/lib/crypto/sessions';
+import { generateIdentity, generateSignedPreKey, initiateSession, publicIdentity, respondToSession } from '../src/lib/crypto/x3dh';
+import { cleanBackupMessage, cleanMediaRef, isInside, isSafeId, localFileId } from '../src/lib/validate';
 
 let passed = 0;
 function test(name: string, fn: () => void) {
@@ -71,6 +74,64 @@ test('emojis para reaccionar: todos los acepta el otro telefono, sin repetidos y
   for (const g of REACTION_GROUPS) assert.equal(new Set(g.emojis).size, g.emojis.length, `repetidos en ${g.title}`);
   assert.ok(new Set(all).size >= 150, `solo hay ${new Set(all).size}`);
   for (const q of QUICK_REACTIONS) assert.ok(all.includes(q), `${q} tambien debe estar en las categorias`);
+});
+
+test('ids y rutas: solo ids sin carpetas, y archivos que se quedan en su carpeta', () => {
+  assert.ok(isSafeId('0123456789abcdef0123456789abcdef'));
+  assert.ok(isSafeId('lote-1') && isSafeId('viejo_2'));
+  for (const bad of ['', '../x', 'a/b', 'a\\b', 'c:x', 'a.b', 'x'.repeat(65), 5, null]) assert.ok(!isSafeId(bad), `${String(bad)} no es un id seguro`);
+  const dir = 'file:///app/doc/media/';
+  assert.ok(isInside(dir, `${dir}abc.enc`));
+  for (const bad of [`${dir}../x.enc`, `${dir}a/../../x`, `${dir}`, 'file:///app/doc/otra/x', `${dir}%2e%2e/x`, `${dir}a\\..\\x`, null]) {
+    assert.ok(!isInside(dir, bad), `${String(bad)} sale de la carpeta`);
+  }
+  assert.match(localFileId('../../salir'), /^[0-9a-f]{32}$/);
+  assert.equal(localFileId('x'), localFileId('x'));
+});
+
+test('adjuntos: solo bucket, llave, nonce y direccion con el formato correcto', () => {
+  const key = Buffer.alloc(32, 1).toString('base64');
+  const nonce = Buffer.alloc(24, 2).toString('base64');
+  const path = 'ab'.repeat(16) + '.bin';
+  assert.deepEqual(cleanMediaRef({ bucket: 'voices', key, nonce, path, pad: 1, size: 2048, extra: 'x' }), { bucket: 'voices', key, nonce, path, pad: 1, size: 2048 });
+  // Los mensajes viejos traen solo la URL de Supabase: se usa el nombre del archivo
+  assert.equal(cleanMediaRef({ bucket: 'videos', key, nonce, url: `https://x.supabase.co/storage/v1/object/public/videos/${path}` })?.path, path);
+  for (const bad of [
+    { bucket: 'otro', key, nonce, path },
+    { bucket: 'videos', key: 'corta', nonce, path },
+    { bucket: 'videos', key, nonce: key, path },
+    { bucket: 'videos', key, nonce, path: '../../etc/passwd' },
+    { bucket: 'videos', key, nonce, url: 'https://x/../../a' },
+    null,
+    'texto',
+  ]) assert.equal(cleanMediaRef(bad), null, JSON.stringify(bad));
+  const doc = cleanMediaRef({ bucket: 'videos', key, nonce, path, name: '../../informe.pdf', mime: 'application/pdf', bytes: 10, size: 1e12 });
+  assert.equal(doc?.name, '_.._informe.pdf');
+  assert.equal(doc?.size, undefined, 'un tamaño imposible se ignora');
+});
+
+test('respaldos: los mensajes legitimos pasan igual y los alterados se rechazan', () => {
+  const legit = {
+    id: '0123456789abcdef0123456789abcdef', peer: 'beto', fromMe: true, kind: 'text', body: 'hola', media: null, mediaFile: null,
+    downloadState: 'none', duration: null, sentAt: 1_700_000_000_000, status: 'read', selfDestruct: false, ttl: null, expiresAt: null,
+    replyTo: null, editedAt: 1_700_000_001_000, deleted: false, reactions: { ana: '👍' }, readByMe: true, viewOnce: false, viewed: false,
+  };
+  assert.deepEqual(cleanBackupMessage(legit), legit);
+  assert.equal(cleanBackupMessage({ ...legit, status: 'pending' })?.status, 'failed', 'lo que no salio queda como fallido');
+  for (const bad of [{ ...legit, id: '../x' }, { ...legit, peer: '' }, { ...legit, kind: 'system' }, { ...legit, sentAt: 'ayer' }, { ...legit, viewOnce: true }, { ...legit, media: { bucket: 'x' } }, 7]) {
+    assert.equal(cleanBackupMessage(bad), null, JSON.stringify(bad));
+  }
+});
+
+test('sesiones: la identidad del otro sale de los datos autenticados de la sesion', () => {
+  const me = generateIdentity();
+  const other = generateIdentity();
+  const spk = generateSignedPreKey(other, 1);
+  const alice = initiateSession(me, { identity: publicIdentity(other), spk: { id: spk.id, pub: spk.pub, sig: spk.sig } });
+  assert.deepEqual(sessionPeerIdentity(alice, publicIdentity(me)), publicIdentity(other));
+  const bob = respondToSession(other, spk, alice.pendingPreKey!);
+  assert.deepEqual(sessionPeerIdentity(bob, publicIdentity(other)), publicIdentity(me));
+  assert.equal(sessionPeerIdentity({ ...alice, ad: 'AAAA' }, publicIdentity(me)), null);
 });
 
 console.log(`\n${passed} pruebas pasaron`);
